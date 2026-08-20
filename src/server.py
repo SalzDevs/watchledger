@@ -6,14 +6,18 @@ Serves the ledger live:
   /api/references.json       index stats as JSON
   /api/reference/<slug>.json one reference's report dict as JSON
   /raw/<path>                raw payload files (the source of truth, browsable)
-  /static/<path>             shared CSS + fonts
+  /static/<path>             shared CSS, JS, fonts
 
-Every page is generated at request time from data/ledger.sqlite; nothing is
-cached, nothing is written. The source-of-truth guarantee is unchanged: every
-number still traces to the raw payloads under /raw/.
+Security rules (from the security guide):
+  - External URLs validated with safe_external_url before rendering.
+  - Text values escaped with safe_text.
+  - Homepage search data shipped as a type=application/json block, rendered
+    by /static/home.js with DOM nodes — never innerHTML.
+  - Security headers (CSP, nosniff, frame denial) on every response.
+  - Slugs validated before routing to the database.
+  - SQLite errors logged server-side only; visitors get a generic page.
 """
 
-import html
 import http.server
 import json
 import os
@@ -26,6 +30,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(__file__))
 from config import DB_PATH, RAW_DIR, STATIC_DIR
 from report import build_report, price_fmt, q, render
+from security import safe_external_url, safe_json_script, safe_slug, safe_text
 
 PORT = int(os.environ.get("PORT", "8040"))
 
@@ -90,6 +95,16 @@ def index_stats(db):
     return out
 
 
+def img_html(url, alt, cls=None):
+    """Render an external image only when the URL is approved."""
+    safe = safe_external_url(url)
+    if not safe:
+        return '<div class="image-placeholder" aria-hidden="true"></div>'
+    cls_attr = f' class="{safe_text(cls)}"' if cls else ""
+    return (f'<img{cls_attr} src="{safe_text(safe)}" alt="{safe_text(alt)}" '
+            f'loading="lazy" referrerpolicy="no-referrer">')
+
+
 PAGE_HEAD = """<!doctype html>
 <html><head><meta charset="utf-8"><title>watchledger — know what a watch is worth, today</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -101,7 +116,7 @@ PAGE_HEAD = """<!doctype html>
 <a href="/" class="logo">watch<span>ledger</span></a>
 <nav class="nav-links"><a href="/#markets">Explore Watches</a><a href="/#how">Market Trends</a><a href="/#trust">How It Works</a></nav>
 <div class="nav-actions">
-<button class="nav-icon" onclick="document.getElementById('q').focus()" aria-label="Search">⌕</button>
+<button class="nav-icon" type="button" data-focus-search aria-label="Search">⌕</button>
 <a href="/raw/" class="btn btn-ghost">Raw data</a>
 <a href="/#markets" class="btn btn-primary">Track a watch</a>
 </div>
@@ -115,41 +130,33 @@ PAGE_FOOT = """<footer><div class="footer-inner">
 </div></footer></body></html>"""
 
 
-def nav_echo():
-    return PAGE_HEAD
-
-
 def render_home(stats):
     hero = max(stats, key=lambda s: s["n_listings"]) if stats else None
 
     market_cards = []
     for s in sorted(stats, key=lambda s: -(s["n_listings"])):
-        img = (f'<img src="{html.escape(s["image"])}" alt="{html.escape(s["brand"] + " " + s["model"])}" loading="lazy">'
-               if s["image"] else '<div class="market-img"></div>')
         rng = price_fmt(s["band_low"] or s["low"]) + " – " + price_fmt(s["band_high"] or s["high"])
         market_cards.append(f"""
-<a class="market-card" href="/reference/{html.escape(s['slug'])}">
- <div class="market-img">{img}</div>
+<a class="market-card" href="/reference/{safe_text(s['slug'])}">
+ <div class="market-img">{img_html(s["image"], s["brand"] + " " + s["model"])}</div>
  <div class="market-body">
-  <div class="market-name">{html.escape(s['brand'])} {html.escape(s['model'])}</div>
-  <div class="market-ref">Ref {html.escape(s['ref'])}</div>
+  <div class="market-name">{safe_text(s['brand'])} {safe_text(s['model'])}</div>
+  <div class="market-ref">Ref {safe_text(s['ref'])}</div>
   <div class="market-range">{rng}</div>
   <div class="market-meta"><span class="dot"></span>{s['n_listings']} exact listings · {fmt_ago(s['updated'])}</div>
-  <div class="market-sub">{s['confidence']} confidence · snapshot data</div>
+  <div class="market-sub">{safe_text(s['confidence'])} confidence · snapshot data</div>
  </div><span class="market-arrow">→</span></a>""")
     market_cards = "".join(market_cards)
 
     recent = sorted(stats, key=lambda s: s["updated"] or 0, reverse=True)[:5]
     recent_rows = ""
     for s in recent:
-        img = (f'<img src="{html.escape(s["image"])}" alt="" loading="lazy">'
-               if s["image"] else '<img alt="">')
         rng = price_fmt(s["band_low"] or s["low"]) + " – " + price_fmt(s["band_high"] or s["high"])
         recent_rows += f"""
-<a class="recent-row" href="/reference/{html.escape(s['slug'])}">
- {img}
- <div><div class="recent-name">{html.escape(s['brand'])} {html.escape(s['model'])}</div>
- <div class="recent-ref">Ref {html.escape(s['ref'])}</div></div>
+<a class="recent-row" href="/reference/{safe_text(s['slug'])}">
+ {img_html(s["image"], "", "recent-thumb")}
+ <div><div class="recent-name">{safe_text(s['brand'])} {safe_text(s['model'])}</div>
+ <div class="recent-ref">Ref {safe_text(s['ref'])}</div></div>
  <div class="recent-range"><div class="p">{rng}</div><div class="m">{s['n_listings']} listings · updated {fmt_ago(s['updated'])}</div></div>
  <span class="recent-arrow">→</span></a>"""
 
@@ -158,21 +165,27 @@ def render_home(stats):
         hrange = price_fmt(hero["band_low"] or hero["low"]) + " – " + price_fmt(hero["band_high"] or hero["high"])
         hero_block = f"""
 <div class="hero-media">
- <img class="hero-img" src="{html.escape(hero['image'] or '')}" alt="{html.escape(hero['brand'] + ' ' + hero['model'])}">
+ {img_html(hero.get("image"), hero["brand"] + " " + hero["model"], "hero-img")}
  <div class="hero-card">
-  <div class="hc-brand">{html.escape(hero['brand'])} {html.escape(hero['model'])}</div>
-  <div class="hc-ref">Ref {html.escape(hero['ref'])}</div>
+  <div class="hc-brand">{safe_text(hero['brand'])} {safe_text(hero['model'])}</div>
+  <div class="hc-ref">Ref {safe_text(hero['ref'])}</div>
   <div class="hc-range">{hrange}</div>
   <div class="hc-label">Observed asking-price range</div>
   <div class="hc-meta"><span class="dot"></span>{hero['n_listings']} exact active listings · {fmt_ago(hero['updated'])}</div>
  </div>
 </div>"""
 
-    refs_json = json.dumps([{
-        "slug": s["slug"], "brand": s["brand"], "model": s["model"], "ref": s["ref"],
-        "range": price_fmt(s["band_low"] or s["low"]) + " – " + price_fmt(s["band_high"] or s["high"]),
-        "image": s["image"],
-    } for s in stats])
+    search_data = [
+        {
+            "slug": safe_slug(s["slug"]),
+            "brand": s["brand"] or "",
+            "model": s["model"] or "",
+            "ref": s["ref"] or "",
+            "range": price_fmt(s["band_low"] or s["low"]) + " – " + price_fmt(s["band_high"] or s["high"]),
+            "image_url": safe_external_url(s["image"]),
+        }
+        for s in stats
+    ]
 
     return PAGE_HEAD + f"""
 <section class="hero">
@@ -186,9 +199,9 @@ def render_home(stats):
    </div>
    <div class="suggestions" id="suggestions"></div>
    <div class="search-chips"><span class="chip-label">Popular searches</span>
-    <button class="chip" data-q="Rolex 126610LN">Rolex 126610LN</button>
-    <button class="chip" data-q="Patek Philippe 5711">Patek 5711</button>
-    <button class="chip" data-q="Tudor Black Bay 58">Tudor BB58</button></div>
+    <button class="chip" type="button" data-search-value="Rolex 126610LN">Rolex 126610LN</button>
+    <button class="chip" type="button" data-search-value="Patek Philippe 5711">Patek 5711</button>
+    <button class="chip" type="button" data-search-value="Tudor Black Bay 58">Tudor BB58</button></div>
   </div>
  </div>
  {hero_block}
@@ -200,11 +213,11 @@ def render_home(stats):
  <span>Transparent market ranges</span>
 </section>
 
-<section class="sec-head" id="how" style="padding-bottom:0">
+<section class="sec-head compact" id="how">
  <div><p class="eyebrow">HOW IT WORKS</p>
  <h2>Three steps to a confident answer</h2></div>
 </section>
-<section style="padding-top:24px"><div class="steps">
+<section class="step-section"><div class="steps">
  <div class="step"><div class="num">01</div><h3>We collect visible market listings</h3>
   <p>Dealer asking prices are pulled from free public sources and stored exactly as returned — with the source URL and fetch time.</p>
   <div class="step-visual sv-collect"><span class="mini-card"></span><span class="mini-card"></span><span class="mini-card"></span><span class="sv-arrow">→</span><span class="mini-tray"></span></div></div>
@@ -225,11 +238,11 @@ def render_home(stats):
  <div class="market-grid">{market_cards}</div>
 </section>
 
-<section class="sec-head" id="recent" style="padding-bottom:0">
+<section class="sec-head compact" id="recent">
  <div><p class="eyebrow">FRESHEST DATA</p>
  <h2>Recently updated pricing pages</h2></div>
 </section>
-<section style="padding-top:24px"><div class="recent-list">{recent_rows}</div></section>
+<section class="step-section"><div class="recent-list">{recent_rows}</div></section>
 
 <section id="trust">
  <div class="sec-head"><div><p class="eyebrow">THE DATA</p>
@@ -243,44 +256,33 @@ def render_home(stats):
    <p>Each number carries its source URL and fetch time, and the raw data is browsable at <a href="/raw/">/raw</a>.</p></div>
  </div>
 </section>
-<script>
-const REFS = {refs_json};
-const input = document.getElementById('q');
-const box = document.getElementById('suggestions');
-function money(v) {{ return v ? '$' + Number(v).toLocaleString('en-US', {{maximumFractionDigits: 0}}) : '—'; }}
-function open() {{
-  const t = input.value.trim().toLowerCase();
-  const hits = REFS.filter(r =>
-    !t || (r.brand + ' ' + r.model + ' ' + r.ref).toLowerCase().includes(t)).slice(0, 6);
-  box.innerHTML = hits.length
-    ? hits.map(r => `<a class="sug-row" href="/reference/${{r.slug}}">
-        <img src="${{r.image || ''}}" alt="" onerror="this.style.visibility='hidden'">
-        <span><span class="t">${{r.brand}} ${{r.model}}</span><br><span class="s">Ref ${{r.ref}}</span></span>
-        <span class="r">${{r.range}}</span></a>`).join('')
-    : '<div class="sug-empty">No tracked reference matches. Try "Rolex 126610LN".</div>';
-  box.classList.add('open');
-}}
-input.addEventListener('input', open);
-input.addEventListener('focus', open);
-document.addEventListener('click', e => {{ if (!box.contains(e.target)) box.classList.remove('open'); }});
-document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => {{
-  input.value = c.dataset.q;
-  open();
-  const first = box.querySelector('.sug-row');
-  if (first) window.location = first.getAttribute('href');
-}}));
-input.addEventListener('keydown', e => {{
-  if (e.key === 'Enter') {{
-    const first = box.querySelector('.sug-row');
-    if (first) window.location = first.getAttribute('href');
-  }}
-}});
-</script>""" + PAGE_FOOT
+<script id="reference-data" type="application/json">{safe_json_script(search_data)}</script>
+<script src="/static/home.js" defer></script>
+""" + PAGE_FOOT
 
 
 def render_not_found(what):
-    return PAGE_HEAD + f"<main style='max-width:800px;margin:60px auto;padding:0 24px'><h1>Not found</h1>" \
-        f"<p class='src'>{html.escape(what)} is not in this ledger. See the <a href='/'>homepage</a> for tracked references.</p></main>" + PAGE_FOOT
+    return PAGE_HEAD + """<main class="narrow-page narrow-page-spaced"><h1>Not found</h1>
+<p class="src">""" + safe_text(what) + """ is not in this ledger. See the <a href="/">homepage</a> for tracked references.</p></main>
+<script src="/static/home.js" defer></script>""" + PAGE_FOOT
+
+
+def render_raw_index():
+    entries = []
+    for root, _, files in os.walk(RAW_DIR):
+        rel = os.path.relpath(root, RAW_DIR)
+        for f in sorted(files):
+            if f.endswith(".json"):
+                p = os.path.join(rel, f) if rel != "." else f
+                entries.append(p)
+    lis = "".join(
+        f"<li><a href='/raw/{safe_text(urllib.parse.quote(p))}'>{safe_text(p)}</a> · "
+        f"{os.path.getsize(os.path.join(RAW_DIR, p)):,} bytes</li>"
+        for p in sorted(entries))
+    return PAGE_HEAD + """<main class="narrow-page narrow-page-spaced"><h1>Raw data — the source of truth</h1>
+<p class="src">Every payload exactly as returned by the MEW API, with source_url and fetched_at. The ledger and every report derive from these files alone.</p>
+<ul>""" + lis + """</ul></main>
+<script src="/static/home.js" defer></script>""" + PAGE_FOOT
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -289,10 +291,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
 
+    def send_security_headers(self, content_type):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Permissions-Policy",
+                         "camera=(), microphone=(), geolocation=(), payment=()")
+        if content_type.startswith("text/html"):
+            self.send_header(
+                "Content-Security-Policy",
+                "; ".join([
+                    "default-src 'self'",
+                    "base-uri 'self'",
+                    "object-src 'none'",
+                    "frame-ancestors 'none'",
+                    "form-action 'self'",
+                    "script-src 'self'",
+                    "style-src 'self' https://fonts.googleapis.com",
+                    "font-src 'self' https://fonts.gstatic.com",
+                    "img-src 'self' https:",
+                    "connect-src 'self'",
+                    "upgrade-insecure-requests",
+                ]),
+            )
+
     def send(self, code, body, ctype="text/html; charset=utf-8"):
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        self.send_security_headers(ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -305,8 +333,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         try:
             self.route(path)
-        except sqlite3.Error as e:
-            self.send(500, f"<pre>ledger error: {html.escape(str(e))}</pre>")
+        except sqlite3.Error:
+            self.log_error("database request failed")
+            self.send(500, render_not_found("Internal server error"))
         except BrokenPipeError:
             pass
 
@@ -324,17 +353,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(200, index_stats(db))
             db.close()
         elif path.startswith("/api/reference/"):
-            slug = path[len("/api/reference/"):]
+            slug = safe_slug(path[len("/api/reference/"):])
+            if not slug:
+                self.send(404, json.dumps({"error": "unknown reference"}),
+                          "application/json; charset=utf-8")
+                return
             db = open_db()
             d = build_report(db, slug)
             db.close()
             if not d:
-                self.send(404, json.dumps({"error": "unknown reference", "slug": slug}),
+                self.send(404, json.dumps({"error": "unknown reference"}),
                           "application/json; charset=utf-8")
             else:
                 self.send_json(200, d)
         elif path.startswith("/reference/"):
-            slug = path[len("/reference/"):]
+            slug = safe_slug(path[len("/reference/"):])
+            if not slug:
+                self.send(404, render_not_found("Unknown reference"))
+                return
             db = open_db()
             d = build_report(db, slug)
             db.close()
@@ -374,24 +410,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         ctype = "text/css; charset=utf-8" if target.endswith(".css") else "application/octet-stream"
         with open(target, "rb") as fh:
             self.send(200, fh.read(), ctype)
-
-
-def render_raw_index():
-    entries = []
-    for root, _, files in os.walk(RAW_DIR):
-        rel = os.path.relpath(root, RAW_DIR)
-        for f in sorted(files):
-            if f.endswith(".json"):
-                p = os.path.join(rel, f) if rel != "." else f
-                entries.append(p)
-    lis = "".join(
-        f"<li><a href='/raw/{html.escape(urllib.parse.quote(p))}'>{html.escape(p)}</a> · "
-        f"{os.path.getsize(os.path.join(RAW_DIR, p)):,} bytes</li>"
-        for p in sorted(entries))
-    return PAGE_HEAD + f"<main style='max-width:800px;margin:40px auto;padding:0 24px'>" \
-        f"<h1>Raw data — the source of truth</h1>" \
-        f"<p class='src'>Every payload exactly as returned by the MEW API, with source_url and fetched_at. The ledger and every report derive from these files alone.</p>" \
-        f"<ul>{lis}</ul></main>" + PAGE_FOOT
 
 
 def main():

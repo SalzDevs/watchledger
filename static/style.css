@@ -441,3 +441,16 @@ footer { border-top: 1px solid var(--border); background: var(--bg); margin-top:
 .badge-nc { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
 .badge .pct { font-weight: 600; }
 .badge .sub { font-weight: 400; opacity: .9; }
+
+/* --- security rework: classes replacing inline styles --- */
+.report-main { max-width: 1200px; margin: 0 auto; padding: 32px 24px 0; }
+.narrow-page { max-width: 800px; margin: 40px auto; padding: 0 24px; }
+.narrow-page-spaced { margin: 60px auto; }
+.hidden { display: none !important; }
+.thumb-placeholder { background: var(--img-bg); }
+.image-placeholder { background: var(--img-bg); min-height: 120px; border-radius: var(--r-img); }
+.recent-thumb { width: 72px; height: 72px; border-radius: var(--r-img); object-fit: cover; background: var(--img-bg); }
+.sec-head.compact { margin-bottom: 16px; }
+section.step-section { padding-top: 24px; }
+.panel-limited p { font-size: 14px; color: var(--muted); margin: 0; line-height: 1.6; }
+body.drawer-open { overflow: hidden; }

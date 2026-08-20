@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import RAW_DIR, DB_PATH
+from security import safe_external_url
 
 
 def connect():
@@ -74,7 +75,7 @@ def main():
             cur.execute(
                 "INSERT OR IGNORE INTO references_meta VALUES (?,?,?,?,?,?,?,?)",
                 (slug, r.get("brand"), r.get("ref"), r.get("model"),
-                 r.get("case_material"), r.get("url"),
+                 r.get("case_material"), safe_external_url(r.get("url")),
                  f"{index.get('source_url','')}", index.get("fetched_at")))
             n_refs += 1
 
@@ -88,6 +89,9 @@ def main():
         payload, src, ts = raw["payload"], raw["source_url"], raw["fetched_at"]
         slug = fname[:-5]
         for l in payload.get("listings") or []:
+            safe_image_url = safe_external_url(l.get("image_url"))
+            safe_detail_url = safe_external_url(l.get("detail_url"))
+            safe_buy_url = safe_external_url(l.get("buy_url"))
             cur.execute(
                 "INSERT OR REPLACE INTO listings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (l.get("id"), slug, l.get("title"), l.get("price_usd"),
@@ -96,7 +100,7 @@ def main():
                  l.get("movement"), l.get("year"), l.get("merchant_slug"),
                  l.get("merchant_name"),
                  1 if l.get("available") else 0,
-                 l.get("image_url"), l.get("detail_url"), l.get("buy_url"),
+                 safe_image_url, safe_detail_url, safe_buy_url,
                  0, src, ts))
             n_list += 1
 
@@ -105,6 +109,9 @@ def main():
         exact = load_raw("exact", fname[:-5])
         if exact:
             for l in (exact.get("payload") or {}).get("items") or []:
+                safe_image_url = safe_external_url(l.get("image_url"))
+                safe_detail_url = safe_external_url(l.get("detail_url"))
+                safe_buy_url = safe_external_url(l.get("buy_url"))
                 cur.execute(
                     "INSERT OR REPLACE INTO listings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (l.get("id"), slug, l.get("title"), l.get("price_usd"),
@@ -113,7 +120,7 @@ def main():
                      l.get("movement"), l.get("year"), l.get("merchant_slug"),
                      l.get("merchant_name"),
                      1 if l.get("available") else 0,
-                     l.get("image_url"), l.get("detail_url"), l.get("buy_url"),
+                     safe_image_url, safe_detail_url, safe_buy_url,
                      1, exact.get("source_url"), exact.get("fetched_at")))
                 n_list += 1
         for a in payload.get("auction_lots") or []:
@@ -121,7 +128,7 @@ def main():
                 "INSERT OR REPLACE INTO auction_lots VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (a.get("slug"), a.get("brand"), a.get("reference"),
                  a.get("model"), a.get("case_material"), a.get("hammer_usd"),
-                 a.get("year_sold"), a.get("venue"), a.get("url"),
+                 a.get("year_sold"), a.get("venue"), safe_external_url(a.get("url")),
                  slug, src, ts))
             n_auc += 1
 
@@ -134,7 +141,7 @@ def main():
                 "INSERT OR IGNORE INTO auction_lots VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (a.get("slug"), a.get("brand"), a.get("reference"),
                  a.get("model"), a.get("case_material"), a.get("hammer_usd"),
-                 a.get("year_sold"), a.get("venue"), a.get("url"), None,
+                 a.get("year_sold"), a.get("venue"), safe_external_url(a.get("url")), None,
                  full.get("source_url"), full.get("fetched_at")))
             n_auc += 1
 
