@@ -1,174 +1,149 @@
-# WatchLedger
+# WatchLedger — Live Site Improvement Report
 
-Data-driven watch market intelligence built from traceable public listings.
+## Audit scope
 
-WatchLedger shows the market for a specific watch reference, separates exact matches from related watches, calculates a conservative observed asking-price range when evidence is sufficient, and refuses to classify prices when the evidence is weak.
+This report is based on a live review of WatchLedger, including the homepage, published-range pages, limited-data pages, zero-data pages, listing tables, related/variant/excluded tabs, public API output, and raw-data browser.
 
-> The product rule: **a polished price range is never more important than an honest one.**
+## Overall assessment
 
----
+WatchLedger is now a substantial improvement over the first proof of concept. The product visibly applies:
 
-## Current product behaviour
+- Market eligibility gates
+- Exact, variant, related, and excluded listing separation
+- Limited-data and zero-data states
+- Coverage, diversity, freshness, and confidence dimensions
+- Published ranges only for eligible references
+- Source provenance and methodology versioning
+- A visible `Track this watch` conversion point
 
-For each tracked reference, WatchLedger currently provides:
+The core direction is correct:
 
-- Exact-reference and related-listing tabs
-- Seller images, prices, availability, and direct source links
-- A displayed asking-price range when minimum coverage is available
-- Potential-deal, fair-price, and above-market labels for range-eligible listings
-- A limited-data state when exact coverage is insufficient
-- Source URL and fetch-time provenance
-- A deterministic raw JSON → SQLite ledger → HTML report pipeline
+> WatchLedger is becoming conservative when evidence is weak.
 
-The current implementation is a proof of concept. The next work must focus on **market-data quality before new visual features or broader source coverage**.
-
----
-
-# Product truth rules
-
-These rules are mandatory. They prevent WatchLedger from overstating what the data can support.
-
-1. **Only strict, non-duplicate, sufficiently fresh configuration matches may influence a range.**
-2. **Related watches never influence an exact-reference range.**
-3. **A text-search result is not automatically an exact match.**
-4. **A low listing count or low source diversity must produce a limited-data state.**
-5. **Active asking prices are not completed sale prices.**
-6. **Every classification must explain the evidence used.**
-7. **Every displayed number must be traceable to a source observation and methodology version.**
-8. **When evidence is insufficient, WatchLedger must say so clearly rather than guess.**
+The next priority is not visual polishing. It is making the **homepage, market labels, comparable grouping, and tracking loop** as rigorous as the market eligibility logic.
 
 ---
 
-# Implementation roadmap
+# Critical improvements
 
-Complete these phases in order.
-
-## Phase 1 — Secure and safe rendering
-
-Before accepting more source data, protect the interface from untrusted third-party listing data.
-
-### Required changes
-
-- Add a central security helper module.
-- Validate outbound listing and image URLs.
-- Stop using `innerHTML` with source-provided values.
-- Move inline JavaScript into static files.
-- Use safe JSON data blocks for browser data.
-- Add a strict Content Security Policy.
-- Add XSS, unsafe-URL, and route-safety tests.
-
-### Acceptance criteria
-
-- A listing title containing `<script>alert(1)</script>` displays as text and never executes.
-- `javascript:`, `data:`, `file:`, malformed, and credential-bearing URLs never render as links or images.
-- The listing drawer and homepage search use DOM nodes plus `textContent`, never `innerHTML` for source data.
-- HTML responses contain CSP, `X-Content-Type-Options`, `Referrer-Policy`, clickjacking protection, and a restrictive permissions policy.
-- Server errors never expose SQLite paths, SQL, stack traces, or source internals.
-
-See the security implementation guide for step-by-step code changes.
-
----
-
-## Phase 2 — Canonical watch matching
+## 1. Never show an invalid range on the homepage
 
 ### Problem
 
-A reference string alone is not enough to establish a comparable market. Broad references can include materially different watches, including different dial, bracelet, material, case size, generation, and special configurations.
+Several homepage cards are correctly marked `LIMITED DATA`, but still show a large numeric range. Examples include:
 
-A current example of a bad result is a very broad exact-match range for a complicated reference family. A range spanning from a low five-figure price to several hundred thousand dollars should not be published as one market.
+- Nautilus 5712: `$19,500–$144,500`
+- Nautilus 5711: `$77,950–$142,000`
+- Explorer II: `$11,000–$13,800`
+- Royal Oak: `$42,500–$60,000`
 
-### Required data model
+Even with a limited-data badge, many people will interpret the large numeric range as a valid market valuation.
 
-Create canonical reference and configuration entities.
+### Required change
 
-```text
-watch_reference
-  id
-  brand
-  family
-  model_name
-  reference_number
-  reference_normalized
-  production_start_year
-  production_end_year
+For every reference where `valid == false`, never show raw low/high asking prices as the main market-range result.
 
-watch_configuration
-  id
-  reference_id
-  configuration_key
-  case_material
-  dial
-  bracelet
-  bezel
-  case_size_mm
-  production_variant
-  active
-```
-
-Add matching fields to every listing.
+Use this instead:
 
 ```text
-listing
-  ...existing fields...
-  canonical_reference_id
-  canonical_configuration_id
-  match_level
-  match_confidence
-  match_reason
-  review_state
+LIMITED MARKET COVERAGE
+
+5 observed exact-match listings
+No published range yet
 ```
 
-### Allowed match levels
-
-| Match level | Meaning | Can affect the range? |
-|---|---|---|
-| `exact_configuration` | Exact reference and matching material/dial/bracelet configuration | Yes |
-| `exact_reference_variant` | Exact reference but meaningful configuration difference | Only in a separate segmented range |
-| `related_reference` | Same model family, different reference | No |
-| `unverified` | Search/title suggests a match but source evidence is incomplete | No |
-| `rejected` | Wrong watch, parts listing, unclear data, or bad match | No |
-
-### Matching process
-
-For every source listing:
-
-1. Normalize its brand and reference value.
-2. Prefer structured source reference fields over title text.
-3. Compare normalized source reference to canonical reference exactly.
-4. Parse supporting configuration fields: material, bracelet, dial, bezel, case size, year.
-5. Assign a `match_level`.
-6. Save the reason, for example:
+Or:
 
 ```text
-Exact source reference matched 126610LN; steel Oyster bracelet; black dial.
+MARKET COVERAGE DEVELOPING
+
+20 observed listings
+Limited source diversity
 ```
 
-7. Send ambiguous listings to a manual-review queue.
+Keep the raw observed price spread only in expanded methodology/evidence details:
+
+```text
+Observed asking prices span $19,500–$144,500.
+This is not a published market range because the comparison set is insufficient.
+```
+
+### Apply this rule everywhere
+
+- Homepage market cards
+- Recently updated list
+- Homepage hero card
+- Search suggestions
+- Any consumer-facing API field
+- Social/SEO preview cards
+
+Only `state == valid` should use the large green observed-range presentation.
 
 ### Acceptance criteria
 
-- A related reference cannot appear in the exact-listings table.
-- A related reference cannot influence an exact-reference range.
-- The report displays exact configuration count separately from related listings.
-- An exact reference with multiple configurations either shows segmented markets or a limited-data result.
-- Every listing has a stored match reason.
+- Limited and zero-data references never display a consumer-facing price range.
+- Homepage cards make the data state more visually prominent than raw observed prices.
+- The user can inspect the raw spread only through evidence details.
 
 ---
 
-## Phase 3 — Deduplicate listings before analytics
+## 2. Fix the confidence contradiction on valid pages
 
 ### Problem
 
-The same watch can appear multiple times:
+The valid Daytona page presents a state similar to:
 
-- Several source pages for the same dealer
-- A dealer website and marketplace mirror
-- Repeated API records
-- Reposts after an asking-price change
+```text
+Coverage: Medium
+Diversity: Medium
+Freshness: High
+Overall: High
+```
 
-Treating repeated rows as independent listings inflates supply, confidence, and the range calculation.
+The overall confidence must not be stronger than the dimensions supporting it.
 
-### Required data model
+### Required change
+
+Calculate overall confidence as no stronger than the lowest critical dimension.
+
+| Coverage | Diversity | Freshness | Maximum overall confidence |
+|---|---|---|---|
+| High | High | High | High |
+| Medium | Medium | High | Medium |
+| High | Limited | High | Limited |
+| Limited | High | High | Limited |
+
+The Daytona state should become:
+
+```text
+Overall confidence: Medium
+
+12 unique exact-match listings
+4 independent dealers
+High freshness
+```
+
+### Acceptance criteria
+
+- One weak dimension prevents a stronger overall state.
+- High confidence requires high coverage, high diversity, and high freshness.
+- The calculation is deterministic and covered by tests.
+
+---
+
+## 3. Deduplicate before allowing a published range
+
+### Problem
+
+The Explorer II page correctly refuses to publish a range because it has only one dealer. However, it still contains many extremely similar rows from that dealer.
+
+Raw source rows are not the same as independent market listings.
+
+### Required change
+
+Before calculating coverage, diversity, or any price range, group duplicate source records into a `listing_cluster`.
+
+Use this data model:
 
 ```text
 listing_cluster
@@ -180,7 +155,7 @@ listing_cluster
   updated_at
 
 listing
-  ...existing fields...
+  id
   source_name
   source_listing_id
   canonical_url
@@ -190,606 +165,639 @@ listing
 
 ### Duplicate rules
 
-#### Definite duplicate
+Treat rows as definite duplicates when they have:
 
-Cluster immediately when one of these is true:
+- The same source and source listing ID
+- The same canonical URL
+- The same dealer inventory identifier
 
-- Same `source_name` and same `source_listing_id`
-- Same canonical URL
-- Same dealer inventory identifier
-
-#### Likely duplicate
-
-Calculate a duplicate score when several signals agree:
+Treat rows as likely duplicates when several signals agree:
 
 - Same dealer
 - Same exact configuration
-- Same price, or price within 1%
-- Same year
+- Same or near-identical price
 - Similar normalized title
 - Same image URL or permitted image fingerprint
 - Similar first-observed timestamp
 
 ### Analytics rule
 
-Use only one representative listing per cluster in market calculations.
+Use one representative per cluster in calculations.
 
-Keep all cluster members available in the evidence view.
-
-### UI rule
-
-Show users:
-
-```text
-1 unique listing
-Also observed on 3 tracked source pages
-```
-
-Do not present the same watch as four competing market listings.
-
-### Acceptance criteria
-
-- Repeated dealer rows do not increase the market listing count.
-- Repeated rows do not increase confidence.
-- Every market calculation records the cluster representative IDs used.
-- The evidence panel shows duplicate-grouping decisions.
-
----
-
-## Phase 4 — Market eligibility and confidence gates
-
-### Problem
-
-A count alone does not make a market trustworthy. Twenty listings from one dealer should not be labelled `High confidence`. Five listings across four dealers may be diverse but still too small for a reliable range.
-
-### Minimum eligibility gate
-
-A report may publish an observed price range only if all requirements are met.
-
-| Gate | Initial minimum |
-|---|---:|
-| Exact configuration clusters | 8 |
-| Independent tracked dealers/sources | 3 |
-| Listings with numeric asking price | 80% |
-| Recently observed listings | 70% within 72 hours |
-| Valid configuration match | 100% of calculation set |
-| Duplicate clustered | Required |
-| Outlier review complete | Required |
-
-If a gate fails, show `Limited exact-match data` instead of a range.
-
-### Confidence dimensions
-
-Do not show one unexplained confidence label. Store and display three dimensions.
-
-```text
-Market coverage
-  Number of valid non-duplicate exact configuration clusters
-
-Source diversity
-  Number of independent dealer/source entities
-
-Freshness
-  Percentage of calculation-set listings observed recently
-```
-
-Calculate an overall state using the lowest important dimension.
-
-| Overall state | Example |
-|---|---|
-| High | 20+ clusters, 5+ sources, fresh, low dispersion |
-| Medium | 8–19 clusters, 3+ sources, acceptable freshness |
-| Limited | Adequate count but poor diversity, stale data, or high dispersion |
-| Insufficient | Fewer than 8 usable exact configuration clusters |
+Keep every source record in the evidence view.
 
 ### UI example
 
 ```text
-Market coverage
-High · 20 exact configuration listings
+20 observed source records
+12 unique listing clusters
+1 independent dealer
 
-Source diversity
-Limited · 1 tracked dealer
-
-Overall confidence
-Limited
+No published range yet
 ```
 
 ### Acceptance criteria
 
-- A one-dealer market can never show `High confidence`.
-- Fewer than eight clusters cannot show a market range.
-- The evidence panel includes coverage, diversity, and freshness.
-- Every confidence result is reproducible from stored inputs.
+- Repeated dealer/source rows do not inflate listing count.
+- Repeated rows do not improve confidence.
+- Every range stores the representative cluster IDs used.
+- The evidence panel exposes duplicate grouping decisions.
 
 ---
 
-## Phase 5 — Outlier handling and conservative pricing
+## 4. Tighten the related-listings experience
 
 ### Problem
 
-A raw minimum-to-maximum range is not a fair market range. It can be distorted by wrong configuration matches, stale listings, rare variants, missing accessories, typing errors, and outliers.
+The Black Bay 58 zero-data page currently shows very broad “related” results, including chronographs, vintage Tudor Submariners, gold variants, Snowflakes, and Monte Carlo chronographs.
 
-### Required calculation pipeline
+That is too broad for the default research experience.
 
-For each target configuration:
+### Required change
 
-1. Select active, fresh, exact-configuration listing clusters.
-2. Exclude listings with missing/invalid prices.
-3. Separate known tax states where possible.
-4. Split into condition/completeness groups when sufficient data exists.
-5. Calculate an initial median.
-6. Calculate median absolute deviation (MAD).
-7. Flag extreme deviations for exclusion or manual review.
-8. Calculate a weighted median and weighted percentiles from the remaining clusters.
-9. Save the complete calculation snapshot.
-
-### Initial outlier rule
-
-Use MAD rather than a normal average/standard deviation because watch prices are not normally distributed.
+Rank related listings into explicit relevance groups:
 
 ```text
-median_price = median(prices)
-mad = median(abs(price - median_price) for price in prices)
-robust_z = 0.6745 * (price - median_price) / mad
+Closest alternatives
+Same model family and similar configuration
+
+Other Black Bay 58 variants
+Different metal, dial, or limited edition
+
+Historical Tudor alternatives
+Different reference family; not comparable for pricing
 ```
 
-Initial policy:
+For Black Bay 58, default related results should prioritise:
 
-- Flag an item if absolute robust z-score is greater than `3.5`.
-- Do not silently delete it.
-- Save an exclusion reason.
-- Allow manual review to restore it if the listing is a valid rare configuration.
+- Same Black Bay Fifty-Eight family
+- Same material
+- Similar dimensions
+- Similar bracelet/strap configuration
+- Closely related reference numbers
 
-### Weighted pricing
-
-Start simple and documented.
+Vintage Submariners and chronographs should appear only under a deliberate broader-research action:
 
 ```text
-weight = freshness_weight
-       × match_quality_weight
-       × source_diversity_weight
-       × data_completeness_weight
+Explore broader Tudor collector references
 ```
-
-Possible initial weights:
-
-| Factor | Weight |
-|---|---:|
-| Observed within 24h | 1.00 |
-| Observed 24–72h ago | 0.85 |
-| Observed 3–7 days ago | 0.60 |
-| Exact configuration | 1.00 |
-| Exact-reference variant | 0.00 for the strict range |
-| Condition and set known | 1.00 |
-| Important fields unknown | 0.75 |
-
-### Displayed values
-
-Use careful terminology:
-
-```text
-Observed exact-match asking-price range
-Typical observed asking price
-```
-
-Do not call active listing prices `sale prices`, `true value`, or `guaranteed value`.
 
 ### Acceptance criteria
 
-- A grossly broad range caused by an extreme outlier becomes limited-data or excludes the outlier with an explanation.
-- Every excluded listing has a stored reason.
-- Every report stores methodology version, input cluster IDs, excluded IDs, and output range.
-- A report can be regenerated exactly from one snapshot.
+- The default related tab has a documented relevance threshold.
+- Related listings always show why they are related.
+- Distant model families are not mixed into close alternatives.
 
 ---
 
-## Phase 6 — Persist market history
+## 5. Make variants a real pricing feature
 
 ### Problem
 
-Rebuilding the ledger from scratch destroys the historical signals that make a market product valuable.
+The Nautilus Moon Phase page correctly separates a rose-gold reference into a variant, but the product needs to explain configuration differences clearly enough for a buyer to understand why the record is excluded.
 
-Without history, WatchLedger cannot accurately show:
+### Required change
 
-- Price drops
-- New listings
-- Days on market
-- Supply changes
-- Listing removal
-- 30/90-day price movement
-- Coverage improvement
-
-### Required data model
+Show selected configuration prominently:
 
 ```text
-source_fetch
-  id
-  source_name
-  fetched_at
-  source_url
-  payload_hash
-  fetch_status
+Selected configuration
 
-listing_observation
-  id
-  listing_id
-  source_fetch_id
-  observed_at
-  price_original
-  currency
-  price_usd
-  availability
-  content_hash
-
-market_snapshot
-  id
-  configuration_id
-  calculated_at
-  methodology_version
-  input_cluster_ids_json
-  excluded_cluster_ids_json
-  exclusion_reasons_json
-  lower_range
-  typical_price
-  upper_range
-  coverage_score
-  diversity_score
-  freshness_score
-  confidence_state
+5712/1A-001
+Stainless steel · Blue dial · Bracelet
 ```
 
-### Required behaviour
-
-- Never overwrite the only record of a previous asking price.
-- Insert a new `listing_observation` on every source fetch.
-- Mark a listing stale after a defined period without observation.
-- Mark a listing removed only after repeat checks confirm it disappeared.
-- Create one `market_snapshot` after each successful calculation run.
-
-### Acceptance criteria
-
-- The product can show a real 30/90-day range trend.
-- The product can show when a listing was first and last observed.
-- The product can send price-drop and new-listing alerts.
-- Historical reports can be reproduced from stored snapshots.
-
----
-
-## Phase 7 — State-specific user experience
-
-The page must adapt to the amount and quality of evidence.
-
-## Valid-market state
-
-Show:
-
-- Observed exact-match asking-price range
-- Typical asking price
-- Coverage, diversity, freshness, and confidence
-- Price-position labels
-- Exact configuration and related tabs
-- Comparable-listing evidence
-- Filters and sorting
-
-Example:
+Then show comparison groups:
 
 ```text
-Observed exact-match asking-price range
-$21,500–$31,500
-
-Typical asking price: $23,275
-
-12 configuration matches · 4 tracked dealers · 83% checked in 72h
-Overall confidence: Medium
+Exact configuration: 4 listings
+Same reference, other configuration: 1 listing
+Related references: 2 listings
+Excluded records: 1 listing
 ```
 
-## Limited-data state
-
-Show:
-
-- Exact match count
-- Related listing count
-- Why a range is unavailable
-- Clear next actions
-- Neutral listing labels only
-
-Do not show:
-
-- Market range
-- Potential-deal/fair/above-market legend
-- Price-position percentages
-- `Evidence behind this range` copy
-- Empty exact-listing filters/table as the main destination
-
-Example:
+### Variant label example
 
 ```text
-Limited exact-match coverage
-
-We found 4 exact configuration listings across 1 tracked dealer.
-That is not enough independent evidence to publish a market range.
-
-[View 4 exact listings] [Browse 24 related listings] [Track this reference]
-```
-
-## Zero-data state
-
-Show related research directly instead of an empty exact-listings table.
-
-```text
-No exact listings currently tracked
-
-We found 24 related listings, but none match this exact configuration closely enough
-for a responsible market range.
-
-[Browse related listings] [Request coverage] [Track this reference]
+5712/1R-001
+Rose-gold configuration
+Excluded from steel 5712/1A pricing
 ```
 
 ### Acceptance criteria
 
-- A zero-data report has no empty filter row or empty exact table as its primary content.
-- Limited-data reports never display incomplete range labels.
-- Evidence wording changes from `Evidence behind this range` to `Current coverage` when no range exists.
+- A configuration difference is visible before the user studies a raw title.
+- Variant records do not influence an exact-configuration range.
+- Every variant has a human-readable exclusion reason.
 
 ---
 
-## Phase 8 — Listing-table normalization
+# Report-page improvements
 
-Do not expose raw, duplicated source titles as the main listing identity.
+## 6. Replace raw source titles in the listing table
 
-### Main row design
+### Problem
+
+Listing rows still expose duplicate, raw source titles such as:
 
 ```text
-Rolex Explorer II Polar
-Ref. 226570 · 2024 · Excellent · Full set
-
-$12,450
-2.4% below typical
-Fair price
-
-Dealer name
-United Kingdom · Observed 14 min ago
-
-[View analysis]
+Rolex Rolex Daytona | REF. 116500LN | Black Dial...
 ```
 
-### Keep raw source details in the drawer
+This makes the product feel like an API viewer instead of a market-research product.
+
+### Required change
+
+Render canonical WatchLedger identity first:
+
+```text
+Rolex Daytona Ceramic
+Ref. 116500LN · 2021 · Black dial · Full set
+
+Excellent · Stainless steel · 40 mm
+```
+
+Keep the full unmodified source title only in the listing-analysis drawer:
 
 ```text
 Original source title
-Rolex Rolex Explorer II 226570 | Box & Papers | 2024
-
-Source page
-View original listing ↗
+Rolex Rolex Daytona | REF. 116500LN | Black Dial | Box & Papers | 2021
 ```
-
-### Required filters
-
-- Condition
-- Box and papers
-- Country/region
-- Price
-- Availability
-- Seller/dealer
-- Year
-- Source
-- Freshness
-- Full set only
-
-### Required sort options
-
-- Best value
-- Lowest price
-- Highest price
-- Closest to typical
-- Most recently observed
-- Newest listing
-- Highest data completeness
 
 ### Acceptance criteria
 
-- Canonical brand/model title is shown once, not repeated from raw source text.
-- Every listing has enough structured context to distinguish it from another listing.
-- Related rows never move into the exact table during filtering/sorting.
+- Brand and model do not repeat in the main title.
+- Main rows use structured fields for comparison.
+- Raw source title remains available for provenance.
 
 ---
 
-## Phase 9 — Make tracking a real product feature
+## 7. Show relative position for fair-price rows
 
-`Track a watch` must become a real action rather than a navigation link.
+### Problem
 
-### First tracking flow
+Potential deals and high-above-market listings show percentages. Fair rows show only `Within observed range`, which does not tell the user whether a price is near the lower or upper end.
+
+### Required change
+
+Show a relative position for every valid listing:
 
 ```text
-Track Rolex Explorer II Polar
-Reference 226570
+Fair price
+2.4% below typical
+```
+
+```text
+Fair price
+5.8% above typical
+```
+
+```text
+Potential deal
+17.4% below typical
+```
+
+```text
+High above market
+37.0% above typical
+```
+
+### Acceptance criteria
+
+- Every valid classified listing displays its relative position.
+- Limited-data listings show no price-position percentage.
+- The explanation drawer uses the same calculation result as the table.
+
+---
+
+## 8. Use state-specific evidence language
+
+### Problem
+
+A zero-data page can currently show text such as:
+
+```text
+EVIDENCE BEHIND THIS PAGE
+0 exact-match listings
+0 tracked dealers
+Each price links to its live listing
+```
+
+The last statement is not applicable when there are no prices.
+
+### Required change
+
+Use different evidence modules by state.
+
+### Valid market
+
+```text
+EVIDENCE BEHIND THIS RANGE
+
+12 unique exact-match listings
+4 independent dealers
+83% observed within the last 72 hours
+```
+
+### Limited market
+
+```text
+CURRENT MARKET COVERAGE
+
+5 exact-match listings
+3 independent dealers
+More listing coverage is needed
+```
+
+### Zero-data market
+
+```text
+CURRENT TRACKING STATUS
+
+No exact-match listings observed yet
+24 broader related listings available
+```
+
+### Acceptance criteria
+
+- Zero-data pages contain no range-specific language.
+- Limited-data pages contain no deal/fair/above-market language.
+- Evidence content always reflects the report state.
+
+---
+
+## 9. Make `Track this watch` a real feature
+
+### Problem
+
+The visible tracking section is a good conversion point, but it must lead to an actual alert workflow rather than only a visual CTA.
+
+### First complete flow
+
+```text
+Track Rolex Daytona Ceramic
+Reference 116500LN
 
 Notify me when:
+
 [ ] A new exact-match listing appears
-[ ] A listing is at least 5% below the typical price
-[ ] The observed market range moves by at least 3%
+[ ] A listing is 5% below the typical observed price
+[ ] The published range changes by 3% or more
 [ ] Market coverage becomes sufficient for a range
 
 Email address
 [Start tracking]
 ```
 
-### Required entities
+For a limited-data watch:
 
 ```text
-user
-watchlist_item
-alert_preference
-alert_delivery
+Notify me when WatchLedger has enough independent evidence
+to publish a market range.
 ```
 
-### First useful alerts
+### Required basics
 
-- New exact listing
-- Price drop on a saved listing
-- Potential deal detected
-- Coverage changed from limited to valid
-- Market range changed materially
+- Double opt-in email confirmation
+- One-click unsubscribe
+- Rate-limited delivery
+- Clear privacy notice
+- Stored alert preferences
+- No account required for the first version
 
 ### Acceptance criteria
 
-- The CTA creates a saved watch or alert preference.
-- Limited-data pages can notify a user when coverage improves.
-- Users can unsubscribe from alerts.
+- The CTA creates an actual saved alert preference.
+- Limited-data pages offer coverage-improved alerts.
+- Every email supports unsubscribe.
 
 ---
 
-## Phase 10 — Expand data sources only after quality gates work
+## 10. Explain every excluded listing
 
-The main product advantage will not come from one source or more styling. It will come from permissioned, diverse, traceable data coverage.
+### Problem
 
-### Source policy
+The `Excluded` tab is a strong transparency feature, but it needs explicit reasons.
 
-Prioritize sources in this order:
+### Required change
 
-1. Licensed dealer inventory feeds
-2. Official APIs
-3. Partner marketplace feeds
-4. Dealer-submitted inventory
-5. Public discovery data only where terms explicitly permit it
-
-### Every source must store
+Every excluded row should show one clear reason:
 
 ```text
-source
-  id
-  name
-  domain
-  access_method
-  permission_status
-  image_usage_status
-  attribution_requirements
-  last_terms_reviewed_at
+Excluded from market range
+Different reference
 ```
 
-### Do not claim
+```text
+Excluded from market range
+Rose-gold variant
+```
 
-- “Every listing on the internet”
-- “All dealer listings”
-- “Verified sale price” when showing an active ask
-- “True value” or a guaranteed investment result
+```text
+Excluded from market range
+Likely duplicate listing
+```
+
+```text
+Excluded from market range
+Price outlier pending review
+```
+
+### Acceptance criteria
+
+- No listing is excluded silently.
+- The explanation is visible in both the table and drawer.
+- Exclusion reasons are stored in the calculation snapshot.
+
+---
+
+# Homepage improvements
+
+## 11. Lead with published markets only
+
+### Required change
+
+Split homepage discovery into two sections.
+
+```text
+Published market ranges
+References with enough independent evidence
+```
+
+Only show valid market cards here.
+
+Then show:
+
+```text
+Coverage developing
+References WatchLedger is actively tracking
+```
+
+For limited markets, show:
+
+```text
+Rolex Explorer II Polar
+20 observed listings · 1 dealer
+Range not published yet
+```
+
+### Acceptance criteria
+
+- Invalid raw price spreads are never visually equal to published ranges.
+- Users can discover what WatchLedger can price confidently today.
+- Developing markets remain discoverable without being misrepresented.
+
+---
+
+## 12. Add market-discovery filters
+
+Add discovery controls:
+
+```text
+[Published ranges] [Coverage developing] [All tracked references]
+```
+
+Useful filters:
+
+- Brand
+- Published range only
+- Price band
+- Minimum source diversity
+- Recently refreshed
+- Most tracked
+- Newly covered references
+
+### Acceptance criteria
+
+- Users can find validly priced watches without scanning limited-data cards.
+- Filter state is visible and shareable in the URL.
+
+---
+
+## 13. Turn unknown searches into demand capture
+
+For an untracked watch query, do not stop at “no result.”
+
+Show:
+
+```text
+We do not track this exact reference yet.
+
+[Request coverage]
+[Track this reference]
+[Browse similar tracked watches]
+```
+
+This creates a demand queue and gives users a reason to return.
+
+---
+
+# Data, transparency, and trust improvements
+
+## 14. Replace “active listing” with “observed listing”
+
+The product currently uses source snapshots. It should not imply independent real-time verification.
 
 Use:
 
-- “Tracked public listings”
-- “Observed asking-price range”
-- “Seller-reported availability”
-- “Market snapshot fetched at …”
+```text
+12 exact-reference listings observed
+Market snapshot fetched 3 hours ago
+Seller-reported availability
+```
+
+Do not use `active` or `verified` unless the application has actually checked the listing’s current source state.
 
 ---
 
-# Implementation order for the next four sprints
+## 15. Add geography, tax, and currency context
 
-## Sprint 1 — Data truth gate
+Global watch listings are not perfectly comparable without location and tax context.
 
-1. Implement strict reference/configuration matching.
-2. Implement listing clusters and duplicate exclusion.
-3. Implement confidence dimensions and market eligibility gate.
-4. Make limited-data and zero-data pages state-specific.
-5. Add automated tests for matching, duplicate isolation, and range eligibility.
+### Required listing fields
 
-**Sprint success:** A range cannot be published from repeated listings, one dealer alone, or clearly mixed configurations.
+- Listing country
+- Original currency
+- Normalised USD amount
+- Tax treatment: included / excluded / unknown
+- Shipping/import note
 
-## Sprint 2 — Pricing correctness
+### Listing UI example
 
-1. Implement MAD outlier detection.
-2. Add exclusion reasons and review state.
-3. Add weighted median/percentile calculation.
-4. Store methodology version and calculation inputs.
-5. Update drawer explanations to use real calculation facts.
+```text
+$23,000 USD
+Original price: €21,250
+United Kingdom
+Tax treatment: not stated
+```
 
-**Sprint success:** An extreme mixed market, such as a broad six-listing range, is limited or explained rather than presented as a normal market.
+### Required filters
 
-## Sprint 3 — Historical market value
+```text
+[United States] [Europe] [United Kingdom] [Global]
+```
 
-1. Add fetch records and listing observations.
-2. Add market snapshots.
-3. Track stale/removed listing state.
-4. Add price-change and supply history.
-5. Show absolute snapshot timestamps and precise freshness language.
+### Acceptance criteria
 
-**Sprint success:** The product can show a real 30/90-day range and tell users when each listing was observed.
-
-## Sprint 4 — Retention and research
-
-1. Build watchlists.
-2. Implement coverage-improved and new-listing alerts.
-3. Normalize table titles and listing details.
-4. Add advanced filters/sorts.
-5. Build shareable report URLs.
-
-**Sprint success:** A collector can save a watch, receive a useful alert, and return to a clear evidence-backed market view.
+- Users can isolate a geographic market.
+- The interface never silently treats tax-included and tax-excluded prices as identical.
 
 ---
 
-# Testing requirements
+## 16. Separate dealer information from price confidence
 
-Add automated tests before expanding reference coverage.
+Add dealer/source profiles without using vague trust badges.
 
-## Data tests
+```text
+Watch Collectors UK
 
-- Strict reference match accepts the correct configuration.
-- Related references cannot influence exact-market calculations.
-- Duplicate clusters count once.
-- One-dealer coverage cannot result in high confidence.
-- Fewer than eight valid clusters cannot show a range.
-- Outliers are flagged with a saved reason.
-- Limited-data reports have no deal/fair/above-market labels.
-- Exact and related tabs remain isolated after filtering and sorting.
+18 listings observed
+Country: United Kingdom
+Last source check: 3 hours ago
+Direct source links available
+```
 
-## Rendering tests
-
-- Raw source titles are escaped.
-- Unsafe URLs do not render.
-- Range evidence count matches the exact clusters used.
-- A zero-data page directs the user to related listings.
-- Raw source URLs are hidden behind a methodology interaction.
-
-## Browser tests
-
-- The search works by keyboard.
-- The listing-analysis drawer opens, traps focus, closes with Escape, and restores focus.
-- Filters work independently per exact/related tab.
-- Mobile listing cards remain usable.
-- Tracking flow validates email, confirms subscription, and supports unsubscribe.
+A `Verified` badge may only be used if documented criteria exist.
 
 ---
 
-# Product language rules
+## 17. Publish a normal-person methodology page
 
-Use these terms consistently.
+The eligibility gate is now visible. The next step is a readable methodology page that explains:
 
-| Avoid | Use instead |
-|---|---|
-| Market value | Observed asking-price range |
-| Every listing | Tracked public listings |
-| Active listing | Listing observed in the latest market snapshot |
-| Verified availability | Seller-reported availability / last observed |
-| Exact match | Exact configuration match, only when verified |
-| Deal | Potential deal |
-| Overpriced | Above observed comparable range |
-| True value | Typical observed asking price |
+- Exact configuration matching
+- Minimum gates for a published range
+- Duplicate clustering
+- Outlier handling
+- Asking prices versus sold prices
+- Freshness policy
+- Source coverage limits
+- Meaning of `Potential deal`
+- What WatchLedger does not verify
+
+Every report should link to its exact methodology version:
+
+```text
+Methodology v1.0
+```
 
 ---
 
-# Final standard
+# Technical and launch improvements
 
-WatchLedger becomes an exceptional product when its interface is as conservative as its visual design is polished.
+## 18. Add search-engine fundamentals
 
-A user should be able to answer these questions on every reference page:
+The live site currently returns `404` for `robots.txt` and `sitemap.xml`.
+
+Before public launch, add:
+
+- `robots.txt`
+- `sitemap.xml`
+- Canonical URLs
+- Unique title tags per reference
+- Unique meta descriptions
+- Open Graph metadata
+- Social share cards
+- JSON-LD structured data where appropriate
+
+### Acceptance criteria
+
+- Every valid reference page appears in the sitemap.
+- Search engines receive canonical URLs.
+- Shared reference links have a useful title, description, and image.
+
+---
+
+## 19. Review public raw-data exposure
+
+The `/raw/` browser is excellent as a provenance demonstration, but complete payload redistribution can create source-terms, copyright, database-right, or privacy risks.
+
+### Safer public evidence experience
+
+```text
+Source evidence
+
+Source: MostExpensiveWatches
+Fetched: 20 Aug 2026, 09:15 UTC
+Records used: 12
+Direct listing links: 12
+Methodology: v1.0
+```
+
+Keep complete raw payloads internal unless source terms explicitly permit public redistribution.
+
+---
+
+## 20. Test mobile and interactive flows before launch
+
+Test:
+
+- Mobile listing cards rather than compressed desktop tables
+- Keyboard search navigation
+- Drawer focus management
+- Exact/variant/related/excluded filter isolation
+- Zero-data and limited-data actions
+- Tracking-form validation
+- Broken-image fallback
+- Slow-network behaviour
+- Source-link failures
+
+---
+
+# Recommended roadmap
+
+## Next sprint — make published ranges unbreakable
+
+1. Hide numeric ranges for all `limited` and `zero` homepage cards.
+2. Fix overall confidence so it cannot exceed coverage or diversity.
+3. Deduplicate repeated listing rows before analytics.
+4. Add excluded-listing reasons.
+5. Explain configuration differences in variants.
+6. Correct zero/limited evidence wording.
+
+### Sprint success condition
+
+Every published range is unmistakably distinct from a raw observed price spread, and no weak market can be mistaken for a valuation.
+
+## Following sprint — make reports decision-ready
+
+1. Canonicalise listing titles.
+2. Show price position for fair listings.
+3. Add location, original currency, tax state, and region filters.
+4. Improve related-listing ranking.
+5. Add dealer/source context.
+6. Make tracking a functioning alert workflow.
+
+### Sprint success condition
+
+A buyer can compare two listings and understand the specific reason one is better priced.
+
+## Then — make the product discoverable and repeatable
+
+1. Separate homepage sections for published versus developing markets.
+2. Add coverage-quality filters.
+3. Add request-coverage flow for unknown searches.
+4. Add SEO fundamentals.
+5. Create shareable reference pages.
+6. Publish the methodology page.
+7. Build a rights-reviewed provenance experience.
+
+### Sprint success condition
+
+Users can find WatchLedger through search, understand its standards, save a reference, and return when the market changes.
+
+---
+
+# Final product standard
+
+WatchLedger will be exceptional when every displayed price result answers seven questions clearly:
 
 1. Is this watch configuration truly comparable?
 2. How many unique listings support the result?
 3. How many independent sources support it?
-4. How recent is the data?
+4. How recent is the market snapshot?
 5. Which listings were excluded, and why?
 6. What does this price label mean?
-7. What should I do if there is not enough evidence yet?
+7. What should the user do if there is not enough evidence yet?
 
-If the system cannot answer a question honestly, it must show a limited-data state instead of pretending to know.
+If the product cannot answer one honestly, it must show a limited-data state instead of pretending to know.
