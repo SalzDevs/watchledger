@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS listing_cluster (
     canonical_reference_id TEXT,
     representative_listing_id TEXT,
     cluster_confidence REAL,
+    cluster_basis TEXT,
     created_at REAL, updated_at REAL
 );
 
@@ -113,6 +114,8 @@ CREATE TABLE IF NOT EXISTS watch_users (
     id TEXT PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
     unsubscribe_token TEXT NOT NULL,
+    confirm_token TEXT,
+    confirmed INTEGER DEFAULT 0,
     created_at REAL
 );
 

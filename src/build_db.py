@@ -182,11 +182,13 @@ def main():
             "ref_key": market.normalize_reference(ref),
             "active_key": "",
             "brand": brand,
+            "active_material": material or "",
         }
     for row in cur.execute("SELECT reference_id, configuration_key, active "
                            "FROM watch_configuration").fetchall():
         if row[2]:
             refs[row[0]]["active_key"] = row[1]
+            refs[row[0]]["active_material"] = row[1]
 
     market.match_all(db, refs)
 

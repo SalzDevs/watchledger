@@ -195,8 +195,14 @@ def match_all(db, refs):
                               f"{row[idx['case_material']] or 'unknown'} case")
                 elif row[idx["exact"]] and not active:
                     level = "exact_reference_variant"
-                    reason = (f"Exact reference but configuration differs "
-                              f"({row[idx['case_material']] or 'unknown'} case)")
+                    variant_mat = row[idx['case_material']] or "unknown"
+                    active_mat = ref_entry.get("active_material") or "unknown"
+                    if active_mat != variant_mat and variant_mat != "unknown":
+                        reason = (f"{variant_mat} configuration; excluded from "
+                                  f"the {active_mat} reference pricing")
+                    else:
+                        reason = ("Exact reference but configuration differs "
+                                  f"({variant_mat} case)")
                 else:
                     level = "related_reference"
                     reason = "Same family, different reference; excluded from exact range."
@@ -212,11 +218,36 @@ def match_all(db, refs):
 
 # --- Phase 3: deduplication -------------------------------------------------
 
+def _norm_title(value):
+    """Lowercase, de-punctuated, tokenised title for duplicate comparison."""
+    if not value:
+        return ()
+    return tuple(re.findall(r"[a-z0-9]+", str(value).lower()))
+
+
+def _title_similar(a, b):
+    """Jaccard-like overlap of the two normalized title token sets."""
+    ta, tb = set(_norm_title(a)), set(_norm_title(b))
+    if not ta or not tb:
+        return False
+    inter = len(ta & tb)
+    union = len(ta | tb)
+    if not union:
+        return False
+    return inter / union >= 0.7
+
+
 def cluster_listings(db, rows):
     """Group duplicate listings into clusters.
 
-    Definite duplicate: same canonical URL (buy_url/detail_url), same source
-    listing id, or same fingerprint. Returns dict listing_id -> cluster_id.
+    Definite duplicate (cluster_confidence 1.0): same canonical URL
+    (buy_url/detail_url), same source listing id, or same fingerprint.
+
+    Likely duplicate (cluster_confidence 0.7): several signals agree —
+    same dealer, same exact configuration, near-identical price, and
+    similar normalized title (design brief #3).
+
+    Returns dict listing_id -> cluster_id.
     """
     now = time.time()
     cols = [d[0] for d in db.execute("SELECT * FROM listings LIMIT 1").description]
@@ -227,6 +258,19 @@ def cluster_listings(db, rows):
     cluster_for = {}
     counter = 0
 
+    def new_cluster(row, confidence, basis):
+        nonlocal counter
+        counter += 1
+        cid = f"cl_{counter}"
+        db.execute(
+            "INSERT OR REPLACE INTO listing_cluster "
+            "(id, canonical_reference_id, representative_listing_id, "
+            "cluster_confidence, cluster_basis, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (cid, row[idx["slug"]], row[idx["id"]], confidence, basis, now, now))
+        return cid
+
+    # Pass 1 — definite duplicates by id / URL / fingerprint.
     for row in rows:
         lid = row[idx["id"]]
         src_list_id = row[idx["source_listing_id"]] or lid
@@ -240,19 +284,56 @@ def cluster_listings(db, rows):
         elif fp and fp in url_seen:
             cid = url_seen[fp]
         if not cid:
-            counter += 1
-            cid = f"cl_{counter}"
-            db.execute(
-                "INSERT OR REPLACE INTO listing_cluster "
-                "(id, canonical_reference_id, representative_listing_id, "
-                "cluster_confidence, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                (cid, row[idx["slug"]], lid, 1.0, now, now))
+            cid = new_cluster(row, 1.0, "source_id/url")
         cluster_for[lid] = cid
         id_seen[src_list_id] = cid
         if fp:
             url_seen[fp] = cid
         db.execute(
             "UPDATE listings SET listing_cluster_id=? WHERE id=?", (cid, lid))
+
+    # Pass 2 — likely duplicates by signals. Cluster rows that share a dealer,
+    # exact configuration, near-identical price, and similar title. Deterministic:
+    # iterate in row order, bind to the first matching cluster. Re-read fresh
+    # rows: canonical_configuration_id is assigned by match_all *after* the
+    # caller captured its row tuples.
+    fresh = db.execute("SELECT * FROM listings").fetchall()
+    sig_seen = {}  # signature -> cluster id for the first row with that signal
+    for row in fresh:
+        lid = row[idx["id"]]
+        merchant = row[idx["merchant_name"]] or ""
+        cfg = row[idx["canonical_configuration_id"]] or ""
+        price = row[idx["price_usd"]]
+        title = row[idx["title"]] or ""
+        if not merchant or not cfg or price is None:
+            continue
+        norm = _norm_title(title)
+        if not norm:
+            continue
+        matched = None
+        for sig, cid in sig_seen.items():
+            if merchant != sig[0] or cfg != sig[1]:
+                continue
+            if abs(sig[2] - price) / max(price, 1.0) > 0.01:
+                continue
+            if _title_similar(sig[3], title):
+                matched = cid
+                break
+        if matched:
+            if cluster_for[lid] != matched:
+                # Merge: move the row onto the existing cluster (keep the
+                # earlier representative). Confidence stays 0.7 for both.
+                old = cluster_for[lid]
+                db.execute(
+                    "UPDATE listing_cluster SET cluster_confidence=0.7, "
+                    "cluster_basis='dealer/config/price/title signals' "
+                    "WHERE id=? OR id=?", (old, matched))
+                cluster_for[lid] = matched
+                db.execute("UPDATE listings SET listing_cluster_id=? WHERE id=?",
+                           (matched, lid))
+        else:
+            sig = (merchant, cfg, price, title)
+            sig_seen[sig] = cluster_for[lid]
 
     # representative: available, then earliest fetched_at, then lowest price
     for cid in sorted(set(cluster_for.values())):
@@ -317,7 +398,9 @@ def eligibility(db, slug):
     if not all(gates.values()) or n_clusters < MIN_CLUSTERS:
         overall = "Insufficient"
     else:
-        overall = min([coverage, diversity, freshness_dim],
+        # Overall confidence may never exceed the weakest critical dimension.
+        # rank stores higher values as *weaker*; max() picks the weakest.
+        overall = max([coverage, diversity, freshness_dim],
                       key=lambda x: rank.get(x, 3))
 
     return {
@@ -435,7 +518,8 @@ def calculate_market(db, slug, eligibility_result, now=None):
         if abs(robust_z) > ROBUST_Z_CUTOFF:
             excluded_ids.append(cid)
             excluded_reasons.append(
-                f"robust z={robust_z:.2f} exceeds {ROBUST_Z_CUTOFF}")
+                f"{cid}: price outlier pending review "
+                f"(robust z={robust_z:.2f} exceeds {ROBUST_Z_CUTOFF})")
         else:
             kept.append((cid, r))
 

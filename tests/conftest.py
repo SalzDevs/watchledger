@@ -44,17 +44,22 @@ def insert_listing(db, lid, slug, title, price, merchant, image_url=None,
 
 def run_pipeline(db, slug="hostile-ref", ref="126610LN", brand="Rolex",
                  model="Submariner", material="Steel"):
-    """Run the same phase 2-6 steps build_db runs, for a single reference."""
-    refs_meta = [(slug, brand, ref, model, material, "https://example.com/ref",
-                  "https://example.com/src", FETCHED_AT)]
+    """Run the same phase 2-6 steps build_db runs for all refs in the DB."""
+    refs_meta = db.execute(
+        "SELECT slug, brand, ref, model, case_material, url, source_url, "
+        "fetched_at FROM references_meta").fetchall()
     all_listings = db.execute("SELECT * FROM listings").fetchall()
     market.build_canonical(db, refs_meta, all_listings)
-    refs = {slug: {"ref_key": market.normalize_reference(ref),
-                   "active_key": "", "brand": brand}}
-    for r in db.execute("SELECT reference_id, configuration_key, active "
-                        "FROM watch_configuration").fetchall():
-        if r[2]:
-            refs[r[0]]["active_key"] = r[1]
+    refs = {}
+    for (s, b, r, m, mat, _u, _su, _f) in refs_meta:
+        refs[s] = {"ref_key": market.normalize_reference(r),
+                   "active_key": "", "brand": b,
+                   "active_material": mat}
+    for row in db.execute("SELECT reference_id, configuration_key, active "
+                          "FROM watch_configuration").fetchall():
+        if row[2]:
+            refs[row[0]]["active_key"] = row[1]
+            refs[row[0]]["active_material"] = row[1]
     market.match_all(db, refs)
     market.cluster_listings(db, all_listings)
     market.register_sources(

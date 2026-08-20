@@ -68,6 +68,52 @@
     box.appendChild(link);
   }
 
+  // Demand capture for untracked queries (design brief #13).
+  function addRequestCoverage(term) {
+    const row = document.createElement("div");
+    row.className = "sug-empty sug-request";
+    row.appendChild(element("span", "sug-request-q", `“${term}” is not tracked yet.`));
+    const requestBtn = document.createElement("button");
+    requestBtn.type = "button";
+    requestBtn.className = "btn btn-sm";
+    requestBtn.textContent = "Request coverage";
+    requestBtn.addEventListener("click", () => {
+      const body = new URLSearchParams({ query: term });
+      fetch("/api/request", { method: "POST", body })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.ok) {
+            row.replaceChildren(
+              element("span", "sug-request-q",
+                "Request recorded — we'll add this reference when coverage allows.")
+            );
+          } else {
+            row.replaceChildren(
+              element("span", "sug-request-q", "Could not record the request. Please try again.")
+            );
+          }
+        })
+        .catch(() => {
+          row.replaceChildren(
+            element("span", "sug-request-q", "Could not record the request. Please try again.")
+          );
+        });
+    });
+    const browse = document.createElement("a");
+    browse.className = "btn btn-sm";
+    browse.href = "/#developing";
+    browse.textContent = "Browse similar tracked watches";
+    row.append(document.createElement("br"), requestBtn, " ", browse);
+    box.appendChild(row);
+  }
+
+  function element(tagName, className, text) {
+    const node = document.createElement(tagName);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+
   function openSuggestions() {
     const term = input.value.trim().toLowerCase();
     const hits = references
@@ -81,10 +127,12 @@
 
     if (hits.length) {
       hits.forEach(addSuggestion);
+    } else if (term) {
+      addRequestCoverage(term);
     } else {
       const empty = document.createElement("div");
       empty.className = "sug-empty";
-      empty.textContent = "No tracked reference matches. Try Rolex 126610LN.";
+      empty.textContent = "Start typing to search tracked references.";
       box.appendChild(empty);
     }
 

@@ -7,3 +7,4 @@ reports/*.html
 # OS junk
 .DS_Store
 out/
+.vercel

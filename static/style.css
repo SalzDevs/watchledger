@@ -499,3 +499,74 @@ body.drawer-open { overflow: hidden; }
   font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
   color: var(--muted); margin: 0 0 10px;
 }
+
+/* --- design brief #5: selected configuration --- */
+.config-box {
+  border: 1px solid var(--border); border-radius: var(--r-card);
+  padding: 14px 18px; margin: 16px 0; background: var(--bg);
+  max-width: 420px;
+}
+.config-label {
+  font-size: 11px; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
+}
+.config-value { font-family: var(--serif); font-size: 20px; line-height: 1.2; }
+.config-sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+/* --- design brief #4: related relevance groups --- */
+.rel-group { margin-bottom: 18px; }
+.rel-group-head {
+  font-size: 12px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--muted); padding: 8px 12px; background: var(--surface);
+  border: 1px solid var(--border); border-bottom: none; border-radius: var(--r-card) var(--r-card) 0 0;
+}
+.rel-group table { border-radius: 0 0 var(--r-card) var(--r-card); }
+.rel-group + .rel-group .rel-group-head { border-radius: var(--r-card) var(--r-card) 0 0; }
+
+/* --- design brief #11/12: discovery filters --- */
+.discovery-filters {
+  display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap;
+  margin: 18px 0 8px; padding: 16px 18px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--r-card);
+}
+.discovery-filters label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted);
+}
+.discovery-filters select, .discovery-filters input {
+  font: inherit; font-size: 14px; padding: 8px 12px; border: 1px solid var(--border);
+  border-radius: var(--r-btn); background: var(--bg); color: var(--ink);
+}
+.filter-active { font-size: 13px; color: var(--muted); margin: 6px 0 14px; }
+.filter-active a { color: var(--blue); }
+.discovery-section { margin-top: 28px; }
+
+/* --- drawer: exclusion reason + subtitle --- */
+.drawer-subtitle { font-size: 14px; color: var(--muted); margin: -6px 0 10px; }
+.drawer-excluded {
+  font-size: 13.5px; color: var(--red); background: var(--red-soft);
+  border: 1px solid var(--red); border-radius: var(--r-card);
+  padding: 10px 14px; margin-bottom: 16px; line-height: 1.5;
+}
+
+/* --- tracking alert checkboxes (design brief #9) --- */
+.track-alerts {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 12px 0; width: 100%; flex-basis: 100%;
+}
+.track-choice {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 14px; cursor: pointer;
+}
+.track-choice input { accent-color: var(--green); width: 16px; height: 16px; }
+
+/* --- demand capture (design brief #13) --- */
+.sug-request { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.sug-request-q { font-weight: 500; }
+
+/* --- methodology page --- */
+.methodology h2 { font-family: var(--serif); font-size: 26px; margin: 28px 0 8px; }
+.methodology h3 { font-size: 16px; margin: 22px 0 6px; }
+.methodology p, .methodology li { font-size: 14.5px; line-height: 1.65; color: var(--ink); }
+.methodology ul { padding-left: 20px; }

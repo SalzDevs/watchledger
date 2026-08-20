@@ -17,7 +17,9 @@ Matching model (Phase 2):
   unverified             no canonical reference
 
 Deduplication (Phase 3): only the representative listing of each cluster
-appears in tables; raw row counts are shown as dedup evidence.
+appears in tables; raw row counts are shown as dedup evidence. Likely
+duplicates (same dealer + config + near price + similar title) share a
+cluster with a lower confidence (design brief #3).
 
 Security rules (from the security guide):
 - Every server-rendered external URL passes through safe_external_url.
@@ -30,6 +32,7 @@ Security rules (from the security guide):
 import datetime
 import json
 import os
+import re
 import sqlite3
 import statistics
 import sys
@@ -51,6 +54,19 @@ JOIN listing_cluster c ON c.representative_listing_id = l.id
 WHERE l.slug=? AND l.match_level=?
 ORDER BY l.price_usd
 """
+
+# Relevance groups for related listings (design brief #4).
+REL_CLOSEST = "Closest alternatives"
+REL_VARIANT = "Other variants"
+REL_HISTORICAL = "Historical alternatives"
+
+# Alert types offered on the tracking form (design brief #9).
+ALERT_TYPES = [
+    ("new_listing", "A new exact-match listing appears"),
+    ("below_typical", "A listing is 5% below the typical observed price"),
+    ("range_change", "The published range changes by 3% or more"),
+    ("coverage_ready", "Market coverage becomes sufficient for a range"),
+]
 
 
 def q(db, sql, params=()):
@@ -90,21 +106,44 @@ def provenance(db, slug, table, exact=None):
     return f"{safe_text(url)} · fetched {when}"
 
 
+def canonical_title(row, brand, model, ref):
+    """Build the structured WatchLedger identity for a listing row.
+
+    The raw source title is never the primary display (design brief #6).
+    Falls back to the raw title only when no structured facts exist.
+    """
+    _lid, price, cur, cond, bp, _avail, merchant, img, buy, detail, title, \
+        year, mat, size, mov, fetched, level, reason, src_name, \
+        src_list_id, cid = row
+    facts = []
+    if year:
+        facts.append(str(year))
+    if cond:
+        facts.append(cond)
+    if bp:
+        facts.append(bp.replace("_", " "))
+    head = f"{brand} {model}".strip() if (brand or model) else (title or "—")
+    sub = " · ".join(x for x in [f"Ref. {ref}"] + facts if x)
+    return head, sub
+
+
 def classify(price, lo, hi, typical, valid):
     """Five-way price-position classification against the published range.
 
-    Returns (kind, pct_label, sub_label).
+    Returns (kind, pct_label, sub_label). Every valid listing shows a
+    relative position to the typical price (design brief #7).
     """
     if price is None:
         return ("not_comp", "—", "Not comparable")
     if not valid or lo is None or hi is None or typical is None:
         return ("limited", "—", "No published range")
+    pct = abs(price - typical) / typical * 100 if typical else 0.0
     if price < lo:
-        pct = abs(price - typical) / typical * 100
         return ("deal", f"↓ {pct:.1f}% below typical", "Potential deal")
     if price <= hi:
-        return ("fair", "Within observed range", "Fair price")
-    pct = abs(price - typical) / typical * 100
+        if price < typical:
+            return ("fair", f"↓ {pct:.1f}% below typical", "Fair price")
+        return ("fair", f"↑ {pct:.1f}% above typical", "Fair price")
     if pct > 12:
         return ("over", f"↑ {pct:.1f}% above typical", "High above market")
     return ("above", f"↑ {pct:.1f}% above typical", "Above market")
@@ -131,6 +170,46 @@ def match_label(level):
     }.get(level, level or "Unknown")
 
 
+def exclusion_reason(row, brand, model, ref, active_material):
+    """Human-readable reason a row is excluded from the exact range (#10)."""
+    level = row[16]
+    material = row[12] or ""
+    if level == "rejected":
+        return "Title indicates parts or accessories, not a complete watch."
+    if level == "exact_reference_variant":
+        if material and active_material and material != active_material:
+            return (f"{material} configuration; excluded from "
+                    f"{active_material} reference pricing.")
+        return "Configuration differs from the active reference."
+    if level == "related_reference":
+        return "Different reference; not comparable for exact pricing."
+    if level == "unverified":
+        return "Reference not in the canonical set."
+    return ""
+
+
+def relevance_group(title, model, ref, active_material, material):
+    """Rank a related row into a relevance group (#4).
+
+    Closest alternatives: same model family *and* same material as the
+    active configuration. Other variants: same family, different material.
+    Historical: unrelated family.
+    """
+    t = (title or "").lower()
+    m = (model or "").lower()
+    fam_tokens = [w for w in re.findall(r"[a-z0-9]+", m) if len(w) > 2]
+    fam_hit = bool(fam_tokens) and all(w in t for w in fam_tokens)
+    ref_hit = bool(re.search(r"ref[. ]?\s*[\w/]+", t))
+    same_mat = (bool(active_material) and bool(material)
+                and market.normalize_material(material)
+                == market.normalize_material(active_material))
+    if fam_hit and same_mat:
+        return REL_CLOSEST
+    if fam_hit or ref_hit:
+        return REL_VARIANT
+    return REL_HISTORICAL
+
+
 def build_report(db, slug):
     meta = q(db, "SELECT brand, ref, model, case_material, url FROM references_meta WHERE slug=?",
              (slug,))
@@ -152,6 +231,11 @@ def build_report(db, slug):
     method = snap[2] if snap else market.METHODOLOGY_VERSION
     excluded = (snap[5] or "[]") if snap else "[]"
 
+    # Published-range fields are consumer-facing: never expose them for a
+    # reference that fails eligibility (design brief #1).
+    if not valid:
+        band_lo, band_hi, typical = None, None, None
+
     # --- deduplicated representative rows (Phase 3) ---
     exact_rows = q(db, REP_QUERY, (slug, "exact_configuration"))
     variant_rows = q(db, REP_QUERY, (slug, "exact_reference_variant"))
@@ -161,6 +245,11 @@ def build_report(db, slug):
     raw_n = q(db, "SELECT COUNT(*) FROM listings WHERE slug=?", (slug,))[0][0]
     cluster_n = q(db, "SELECT COUNT(DISTINCT listing_cluster_id) FROM listings "
                       "WHERE slug=? AND listing_cluster_id IS NOT NULL", (slug,))[0][0]
+    likely_dup_n = q(db, "SELECT COUNT(DISTINCT listing_cluster_id) FROM "
+                         "listings WHERE slug=? AND listing_cluster_id IS NOT NULL "
+                         "AND listing_cluster_id IN "
+                         "(SELECT id FROM listing_cluster WHERE cluster_confidence < 1.0)",
+                     (slug,))[0][0]
 
     prices = [r[1] for r in exact_rows if r[1] is not None]
     n_exact = len(exact_rows)
@@ -177,6 +266,7 @@ def build_report(db, slug):
 
     # --- listing rows, exact first, then variant, then related ---
     listing_data = {}
+    active_material = elig.get("_active_material", material or "")
 
     def row_html(r, lo, hi, typ_p, use_range):
         (lid, price, cur, cond, bp, _avail, merchant, img, buy, detail, title,
@@ -197,9 +287,15 @@ def build_report(db, slug):
             safe_text(cond or ""), safe_text(bp or ""),
             safe_text(year or ""), safe_text(mat or ""),
             f"{size:g}mm" if size else ""] if x)
+        head, sub_t = canonical_title(r, brand, model, ref)
+        title_html = (f'<div class="listing-title">{safe_text(head)}</div>'
+                      f'<div class="listing-sub">{safe_text(sub_t)}</div>')
+        excl_reason = exclusion_reason(r, brand, model, ref, active_material)
         listing_data[str(lid)] = {
             "id": str(lid),
-            "title": title or "",
+            "title": head,
+            "subtitle": sub_t,
+            "raw_title": title or "",
             "price": price,
             "currency": cur or "USD",
             "condition": cond or "",
@@ -218,6 +314,7 @@ def build_report(db, slug):
             "sub": sub,
             "match_level": level or "",
             "match_reason": reason or "",
+            "exclusion_reason": excl_reason,
             "source_name": src_name or "",
             "source_listing_id": src_list_id or "",
             "cluster_id": cid or "",
@@ -227,10 +324,10 @@ def build_report(db, slug):
         return f"""
 <tr class="lrow" data-kind="{safe_text(kind)}" data-price="{price if price is not None else 1e18}" data-year="{year or ''}" data-merchant="{safe_text(merchant or '')}" data-available="{1 if _avail else 0}" data-listing-id="{safe_text(lid)}">
  <td><div class="watch-cell">{thumb}
-   <div><div class="listing-title">{safe_text(title or '—')}</div>
+   <div>{title_html}
    <div class="listing-sub">{facts}</div></div></div></td>
  <td class="price-cell">{price_fmt(price)}
-   <div class="price-pos">{pct_label if kind in ('deal',) else '&nbsp;'}</div></td>
+   <div class="price-pos">{pct_label if kind in ('deal', 'fair', 'above', 'over') else '&nbsp;'}</div></td>
  <td>{badge}</td>
  <td><div class="seller-cell"><div class="listing-sub">{safe_text(merchant or '—')}</div>
    <div class="listing-sub">{'in stock' if _avail else 'on request'}</div></div></td>
@@ -242,7 +339,23 @@ def build_report(db, slug):
                          for r in exact_rows)
     variant_html = "".join(row_html(r, band_lo, band_hi, typical, use_range)
                            for r in variant_rows)
-    rel_html = "".join(row_html(r, None, None, None, False) for r in rel_rows)
+
+    # Related rows are ranked into relevance groups (design brief #4).
+    rel_groups = {REL_CLOSEST: [], REL_VARIANT: [], REL_HISTORICAL: []}
+    for r in rel_rows:
+        group = relevance_group(r[10], model, ref, active_material, r[12] or "")
+        rel_groups[group].append(r)
+
+    def group_table(group_name, rows):
+        if not rows:
+            return ""
+        rows_html = "".join(row_html(r, None, None, None, False) for r in rows)
+        return (f'<div class="rel-group"><div class="rel-group-head">'
+                f'{safe_text(group_name)}</div>{rows_html}</div>')
+
+    rel_html = (group_table(REL_CLOSEST, rel_groups[REL_CLOSEST])
+                + group_table(REL_VARIANT, rel_groups[REL_VARIANT])
+                + group_table(REL_HISTORICAL, rel_groups[REL_HISTORICAL]))
     rejected_html = "".join(row_html(r, None, None, None, False)
                             for r in rejected_rows)
 
@@ -252,6 +365,17 @@ def build_report(db, slug):
         f'<td class="price-cell">{price_fmt(a[0])}</td></tr>'
         for a in auc_rows)
 
+    # Dealer context (design brief #16).
+    dealers = {}
+    for r in all_rep_rows:
+        name = r[6] or ""
+        if not name:
+            continue
+        d = dealers.setdefault(name, {"count": 0, "last": 0})
+        d["count"] += 1
+        if r[15]:
+            d["last"] = max(d["last"], r[15])
+
     return {
         "slug": slug, "brand": brand, "ref": ref, "model": model,
         "material": material, "ref_url": ref_url,
@@ -259,6 +383,7 @@ def build_report(db, slug):
         "n_related": len(rel_rows), "n_rejected": len(rejected_rows),
         "n_dealers": n_dealers,
         "n_clusters": cluster_n, "n_raw_rows": raw_n,
+        "n_likely_dup_clusters": likely_dup_n,
         "listing_median": typical,
         "listing_low": min(prices) if prices else None,
         "listing_high": max(prices) if prices else None,
@@ -286,6 +411,8 @@ def build_report(db, slug):
         "excluded_json": excluded,
         "valid": valid,
         "zero": n_exact == 0,
+        "dealers": dealers,
+        "active_material": material or "",
     }
 
 
@@ -335,7 +462,7 @@ def render_limited_data_summary(d):
     if not gates["freshness"]:
         failures.append("most listings are older than 72 hours")
     why = "; ".join(failures) or "coverage is below the published minimum"
-    msg = (f"We found <b>{d['n_exact']} exact listings</b> for reference "
+    msg = (f"We found <b>{d['n_exact']} observed listings</b> for reference "
            f"{safe_text(d['ref'])} — the observed market is still too thin to "
            f"publish a trustworthy range ({why}).")
     if d["n_related"] + d["n_variant"]:
@@ -343,7 +470,7 @@ def render_limited_data_summary(d):
                 "available for broader research below.")
     return f"""
 <div class="range-card limited-state">
- <div class="range-label">OBSERVED MARKET RANGE — LIMITED DATA</div>
+ <div class="range-label">MARKET COVERAGE DEVELOPING</div>
  <div class="limited-title">No published range yet</div>
  <p class="range-sub">{msg}</p>
  <p class="src">Exact-match data: {d['src_exact']}</p>
@@ -356,7 +483,7 @@ def render_zero_data_summary(d):
 <div class="range-card limited-state">
  <div class="range-label">MARKET DATA — NOT OBSERVED</div>
  <div class="limited-title">No listings tracked for this reference</div>
- <p class="range-sub">WatchLedger has not yet observed active listings for {safe_text(d['ref'])}. When dealers list it, eligibility and pricing run automatically.</p>
+ <p class="range-sub">WatchLedger has not yet observed listings for {safe_text(d['ref'])}. When dealers list it, eligibility and pricing run automatically.</p>
  <p class="src">Source of this reference: {d['src_exact'] or 'not yet fetched'}</p>
 </div>"""
 
@@ -378,8 +505,7 @@ def render_limited_data_panel(d):
  {int(market.MIN_PRICE_RATIO * 100)}% with published prices, and {int(market.MIN_FRESHNESS * 100)}%
  fresher than {market.FRESH_WINDOW // 3600} hours.
  {safe_text(d['ref'])} does not meet these yet, so no deal/fair/above labels are shown.
- Check back after more dealers list this reference, or browse the related listings below.</p>
-</div>"""
+ Check back after more dealers list this reference, or browse the related listings below.</p></div>"""
 
 
 def render_ago(up_ts):
@@ -399,7 +525,7 @@ def render_meta(d):
     brand = safe_text(d["brand"])
     ref = safe_text(d["ref"])
     model = safe_text(d["model"] or "")
-    title = f"{brand} {ref} — watchledger"
+    title = f"{brand} {model} ({ref}) — WatchLedger"
     image_url = safe_external_url(d["image"])
     if image_url:
         img = (f'<img src="{safe_text(image_url)}" alt="{brand} {model}" '
@@ -432,15 +558,38 @@ def render_confidence(d):
 
 
 def render_evidence(d):
+    """State-specific evidence language (design brief #8)."""
+    if d["zero"]:
+        return render_evidence_zero(d)
+    if not d["valid"]:
+        return render_evidence_limited(d)
+    return render_evidence_valid(d)
+
+
+def _evidence_sources(d):
     ref_link = ""
     ref_url = safe_external_url(d["ref_url"])
     if ref_url:
         ref_link = (f'<p class="src">Reference page: '
                     f'<a href="{safe_text(ref_url)}">{safe_text(d["ref_url"])}</a></p>')
-    dedup = ""
+    return ref_link
+
+
+def _dedup_evidence(d):
+    parts = []
     if d["n_raw_rows"] != d["n_clusters"]:
-        dedup = (f'<span class="ev-item"><b>{d["n_raw_rows"]}</b> raw rows → '
-                 f'<b>{d["n_clusters"]}</b> unique listings (deduplicated)</span>')
+        parts.append(f'<b>{d["n_raw_rows"]}</b> raw rows → '
+                     f'<b>{d["n_clusters"]}</b> unique listings (deduplicated)')
+    if d["n_likely_dup_clusters"]:
+        parts.append(f'<b>{d["n_likely_dup_clusters"]}</b> cluster(s) marked as '
+                     f'likely duplicates (dealer+config+price+title signals)')
+    if not parts:
+        return ""
+    inner = "".join(f'<span class="ev-item">{p}</span>' for p in parts)
+    return f'<div class="ev-row">{inner}</div>'
+
+
+def render_evidence_valid(d):
     excluded_n = len(json.loads(d["excluded_json"])) if d["excluded_json"] else 0
     excluded_note = ""
     if excluded_n:
@@ -448,19 +597,58 @@ def render_evidence(d):
                          f'(z&gt;{market.ROBUST_Z_CUTOFF}): {excluded_n} listing(s). '
                          'Excluded rows are never deleted; they remain in the ledger.</p>')
     return f"""<div class="evidence">
- <div class="ev-title">EVIDENCE BEHIND THIS PAGE</div>
- <div class="ev-row"><span class="ev-item"><b>{d['n_exact']}</b> exact-match listings</span>
- <span class="ev-item"><b>{d['n_dealers']}</b> tracked dealers</span>
- <span class="ev-item"><b>✓</b> each price links to its live listing</span>
- {dedup}</div>
+ <div class="ev-title">EVIDENCE BEHIND THIS RANGE</div>
+ <div class="ev-row"><span class="ev-item"><b>{d['n_exact']}</b> unique exact-match listings</span>
+ <span class="ev-item"><b>{d['n_dealers']}</b> independent dealers</span>
+ <span class="ev-item"><b>✓</b> observed from source payloads, not independent live checks</span></div>
+ {_dedup_evidence(d)}
  <details class="ev-details"><summary>See sources and methodology</summary>
  <p class="src">Methodology: methodology version {d['method']}; weighted median with
- freshness &amp; completeness weights; robust MAD outlier filter (z&gt;{market.ROBUST_Z_CUTOFF}).</p>
+ freshness &amp; completeness weights; robust MAD outlier filter (z&gt;{market.ROBUST_Z_CUTOFF}).
+ <a href="/methodology">Read the full methodology →</a></p>
  {excluded_note}
  <p class="src">Exact-match listings: {d['src_exact']}</p>
  <p class="src">Related listings: {d['src_related']}</p>
  <p class="src">Auction data: {d['src_auctions']}</p>
- {ref_link}
+ {_evidence_sources(d)}
+ </details>
+ </div>"""
+
+
+def render_evidence_limited(d):
+    spread = ""
+    if d["listing_low"] is not None and d["listing_high"] is not None:
+        spread = (f'<p class="src">Observed asking prices span '
+                  f'{price_fmt(d["listing_low"])}–{price_fmt(d["listing_high"])}. '
+                  'This is <b>not a published market range</b> because the '
+                  'comparison set is insufficient.</p>')
+    return f"""<div class="evidence">
+<div class="ev-title">CURRENT MARKET COVERAGE</div>
+  <div class="ev-row"><span class="ev-item"><b>{d['n_exact']}</b> exact-match listings observed</span>
+  <span class="ev-item"><b>{d['n_dealers']}</b> independent dealers</span>
+  <span class="ev-item">More listing coverage is needed</span></div>
+  {_dedup_evidence(d)}
+  <details class="ev-details"><summary>See sources and methodology</summary>
+ {spread}
+ <p class="src">Methodology: methodology version {d['method']}.
+ <a href="/methodology">Read the full methodology →</a></p>
+ <p class="src">Exact-match listings: {d['src_exact']}</p>
+ <p class="src">Related listings: {d['src_related']}</p>
+ {_evidence_sources(d)}
+ </details>
+ </div>"""
+
+
+def render_evidence_zero(d):
+    return f"""<div class="evidence">
+ <div class="ev-title">CURRENT TRACKING STATUS</div>
+ <div class="ev-row"><span class="ev-item"><b>{d['n_exact']}</b> exact-match listings observed</span>
+ <span class="ev-item"><b>{d['n_related'] + d['n_variant']}</b> broader related listings available</span></div>
+ <details class="ev-details"><summary>See sources and methodology</summary>
+ <p class="src">Methodology: methodology version {d['method']}.
+ <a href="/methodology">Read the full methodology →</a></p>
+ <p class="src">Related listings: {d['src_related']}</p>
+ {_evidence_sources(d)}
  </details>
  </div>"""
 
@@ -491,6 +679,16 @@ def render_tabs(d):
 </div>"""
 
 
+def render_selected_configuration(d):
+    """Show the active configuration prominently (design brief #5)."""
+    mat = safe_text(d["active_material"] or "—")
+    return f"""<div class="config-box">
+ <div class="config-label">SELECTED CONFIGURATION</div>
+ <div class="config-value">{safe_text(d['ref'])}</div>
+ <div class="config-sub">{mat} · pricing applies to this configuration only</div>
+</div>"""
+
+
 def render_listing_table(d, rows_html, table_id, header=None):
     head = header or ("<tr><th>Watch</th><th>Price</th><th>Position</th>"
                       "<th>Seller</th><th></th></tr>")
@@ -505,6 +703,50 @@ def render_drawer():
  <button id="drawer-close" class="drawer-close" type="button" data-close-drawer aria-label="Close listing analysis">×</button>
  <div id="drawer-body"></div>
 </aside>"""
+
+
+def render_track_form(d):
+    """Tracking CTA with alert preference types (design brief #9)."""
+    model = safe_text(d["model"] or d["ref"])
+    limited = not d["valid"]
+    if limited:
+        prompt = ("Notify me when WatchLedger has enough independent evidence "
+                  "to publish a market range.")
+        types = [(t, l) for t, l in ALERT_TYPES if t == "coverage_ready"]
+    else:
+        prompt = f"Get an email when the market for {model} changes meaningfully."
+        types = [(t, l) for t, l in ALERT_TYPES if t != "coverage_ready"]
+    boxes = "".join(
+        f'<label class="track-choice"><input type="checkbox" name="alerts" value="{t}">'
+        f'<span>{safe_text(l)}</span></label>'
+        for t, l in types)
+    return f"""<div class="track-box">
+ <h3>Track this watch</h3>
+ <p class="track-sub">{prompt}</p>
+ <form id="track-form" action="/api/track" method="post" data-slug="{safe_text(d['slug'])}" data-valid="{1 if not limited else 0}">
+  <div class="track-alerts">{boxes}</div>
+  <label class="track-field"><input type="email" name="email" required placeholder="you@example.com" autocomplete="email">
+  <button class="btn btn-primary" type="submit">Start tracking</button></label>
+  <p class="track-note">Double opt-in confirmation by email. One-click unsubscribe in every email. No spam, ever.</p>
+ </form>
+ <div class="track-done" id="track-done" hidden aria-live="polite">✓ Almost done — check your inbox to confirm.</div>
+</div>"""
+
+
+def render_dealers(d):
+    if not d["dealers"]:
+        return ""
+    rows = "".join(
+        f'<tr><td>{safe_text(name)}</td><td>{cnt} listings observed</td>'
+        f'<td>{render_ago(last)}</td></tr>'
+        for name, info in sorted(d["dealers"].items())
+        for cnt, last in [(info["count"], info["last"])])
+    return f"""<section class="live-section">
+ <div class="live-head"><h2>Dealers observed</h2>
+ <div class="sub">Every listing links directly to its source listing</div></div>
+ <table class="listing-table"><thead><tr><th>Dealer</th><th>Listings</th><th>Last observed</th></tr></thead>
+ <tbody>{rows}</tbody></table>
+</section>"""
 
 
 def render(d):
@@ -546,21 +788,41 @@ def render(d):
 </section>"""
 
     drawer = render_drawer()
+    track_form = render_track_form(d)
+    dealers = render_dealers(d)
 
-    track_form = f"""<div class="track-box">
- <h3>Track this watch</h3>
- <p class="track-sub">Get an email when the market for {safe_text(d['model'] or d['ref'])} changes meaningfully.</p>
- <form id="track-form" action="/api/track" method="post" data-slug="{safe_text(d['slug'])}">
-  <label class="track-field"><input type="email" name="email" required placeholder="you@example.com" autocomplete="email">
-  <button class="btn btn-primary" type="submit">Notify me</button></label>
-  <p class="track-note">One-click unsubscribe in every email. No spam, ever.</p>
- </form>
- <div class="track-done" id="track-done" hidden aria-live="polite">✓ You're tracking this watch.</div>
-</div>"""
+    desc = (f"{d['n_exact']} observed listings for {brand} {model} "
+            f"(Ref. {ref}). WatchLedger computes market ranges deterministically "
+            f"from traceable dealer listings.")
+    og_image = safe_external_url(d["image"])
+    jsonld = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": f"{brand} {model} (Ref. {ref})",
+        "brand": {"@type": "Brand", "name": brand},
+        "category": "Watches",
+        "description": desc,
+    }
+    if d["band_lo"] is not None:
+        jsonld["offers"] = {
+            "@type": "AggregateOffer",
+            "lowPrice": d["band_lo"],
+            "highPrice": d["band_hi"],
+            "priceCurrency": "USD",
+            "availability": "https://schema.org/InStock",
+        }
 
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>{title}</title>
+<html><head><meta charset="utf-8"><title>{safe_text(title)}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="/reference/{safe_text(d['slug'])}">
+<meta name="description" content="{safe_text(desc)}">
+<meta property="og:type" content="product">
+<meta property="og:title" content="{safe_text(title)}">
+<meta property="og:description" content="{safe_text(desc)}">
+{('' if not og_image else f'<meta property="og:image" content="{safe_text(og_image)}">')}
+<meta name="twitter:card" content="summary">
+<script type="application/ld+json">{safe_json_script(jsonld)}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -570,7 +832,7 @@ def render(d):
 <nav class="nav-links"><a href="/#markets">Explore Watches</a><a href="/#how">Market Trends</a><a href="/#trust">How It Works</a></nav>
 <div class="nav-actions">
 <a class="nav-icon" href="/" aria-label="Search">⌕</a>
-<a href="/raw/" class="btn btn-ghost">Raw data</a>
+<a href="/methodology" class="btn btn-ghost">Methodology</a>
 <a href="/#markets" class="btn btn-primary">Track a watch</a>
 </div>
 </div></header>
@@ -581,13 +843,14 @@ def render(d):
  <div>
   <h1 class="model-name">{brand} {model}</h1>
   <div class="model-ref">Reference {ref}</div>
-  <p class="model-desc">Case material: {safe_text(d['material'] or '—')}. Market data computed deterministically from {d['n_exact']} exact-reference listings.</p>
+  <p class="model-desc">Case material: {safe_text(d['material'] or '—')}. Market data computed deterministically from {d['n_exact']} observed listings.</p>
   <div class="model-meta">
-   <div class="stat"><div class="k">Exact-match listings</div><div class="v">{d['n_exact']}</div></div>
-   <div class="stat"><div class="k">Tracked dealers</div><div class="v">{d['n_dealers']}</div></div>
+   <div class="stat"><div class="k">Observed listings</div><div class="v">{d['n_exact']}</div></div>
+   <div class="stat"><div class="k">Independent dealers</div><div class="v">{d['n_dealers']}</div></div>
    <div class="stat"><div class="k">Confidence</div><div class="v">{d['confidence']}</div></div>
    <div class="stat"><div class="k">Last checked</div><div class="v">{ago}</div></div>
   </div>
+  {render_selected_configuration(d)}
   {summary}
   {panel}
   {conf}
@@ -597,14 +860,15 @@ def render(d):
 {track_form}
 
 <section class="live-section">
- <div class="live-head"><h2>Live listings</h2>
- <div class="sub">{d['n_exact']} exact · {d['n_variant']} variants · {d['n_related']} related · updated {ago}</div></div>
+ <div class="live-head"><h2>Observed listings</h2>
+ <div class="sub">{d['n_exact']} exact · {d['n_variant']} variants · {d['n_related']} related · observed {ago}</div></div>
  {tabs}
  {table_exact}
  {table_variant}
  {table_rel}
  {table_rejected}
 </section>
+{dealers}
 {auc_block}
 </main>
 {drawer}
@@ -612,7 +876,7 @@ def render(d):
 <div class="col"><div class="logo">watch<span>ledger</span></div>
 <p>Every number above traces to the raw payload at the listed source URL. No AI, no guesswork.</p></div>
 <div class="col"><b>Data</b><a href="/raw/">Raw payloads</a><a href="/api/reference/{safe_text(d['slug'])}.json">JSON for this watch</a></div>
-<div class="col"><b>Product</b><a href="/#how">How it works</a><a href="/#trust">Why it's trustworthy</a></div>
+<div class="col"><b>Product</b><a href="/methodology">Methodology</a><a href="/#trust">Why it's trustworthy</a><a href="/#how">How it works</a></div>
 </div></footer>
 <script id="listing-data" type="application/json">{safe_json_script(d["listing_data"])}</script>
 <script src="/static/report.js" defer></script>

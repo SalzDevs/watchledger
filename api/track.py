@@ -1,8 +1,10 @@
 """Vercel Python function: POST /api/track.
 
-Adds a watch to a user's watchlist. Persists to Vercel Blob (free tier) as:
-  watchledger/index.json            {email_hash: unsubscribe_token}
-  watchledger/users/<token>.json    {email, items: [{slug, created_at}]}
+Adds a watch to a user's watchlist with alert preferences (double opt-in:
+the user is stored unconfirmed until they hit /confirm?token=...). Persists
+to Vercel Blob (free tier) as:
+  watchledger/index.json            {email_hash: token}
+  watchledger/users/<token>.json    {email, confirmed, alerts, items}
 
 Stdlib only; Vercel's Python runtime wraps this WSGI app (exported as `app`).
 """
@@ -20,6 +22,7 @@ BLOB_BASE = "https://blob.vercel-storage.com"
 TOKEN = os.environ.get("BLOB_READ_WRITE_TOKEN", "")
 
 ALLOWED_SLUG_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-")
+ALERT_TYPES = {"new_listing", "below_typical", "range_change", "coverage_ready"}
 
 
 def slug_ok(slug):
@@ -109,6 +112,9 @@ def app(environ, start_response):
     action = params.get("action", [""])[0]
     email = (params.get("email", [""])[0] or "").strip().lower()
     slug = (params.get("slug", [""])[0] or "").strip().lower()
+    alerts = [a for a in params.get("alerts", []) if a in ALERT_TYPES]
+    if not alerts:
+        alerts = ["new_listing"]
 
     if not TOKEN:
         return respond(start_response, "503 Service Unavailable",
@@ -127,10 +133,16 @@ def app(environ, start_response):
 
     user = read_user(token) or {"email": email, "items": []}
     user["email"] = email
+    user.setdefault("confirmed", False)
+    user.setdefault("alerts", {})
+    user["alerts"][slug] = alerts
     items = user.get("items", [])
     if not any(item.get("slug") == slug for item in items):
         items.append({"slug": slug, "created_at": time.time()})
         user["items"] = items
+    confirm_token = hashlib.sha256(
+        (token + slug + "confirm" + secrets.token_hex(8)).encode()).hexdigest()
+    user["confirm_token"] = confirm_token
 
     try:
         write_user(token, user)
@@ -139,4 +151,7 @@ def app(environ, start_response):
         return respond(start_response, "503 Service Unavailable",
                        json.dumps({"error": "could not persist watchlist"}))
 
-    return respond(start_response, "200 OK", json.dumps({"ok": True, "slug": slug}))
+    return respond(start_response, "200 OK", json.dumps({
+        "ok": True, "slug": slug, "alerts": alerts,
+        "confirm_url": "/confirm?token=" + confirm_token,
+    }))

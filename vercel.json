@@ -3,13 +3,18 @@
   "outputDirectory": "out",
   "functions": {
     "api/track.py": { "maxDuration": 10 },
-    "api/unsubscribe.py": { "maxDuration": 10 }
+    "api/unsubscribe.py": { "maxDuration": 10 },
+    "api/request.py": { "maxDuration": 10 }
   },
   "rewrites": [
     { "source": "/reference/:slug", "destination": "/reports/:slug.html" },
     { "source": "/api/reference/:slug", "destination": "/api-json/reference/:slug" },
     { "source": "/api/references.json", "destination": "/api-json/references.json" },
-    { "source": "/unsubscribe", "destination": "/api/unsubscribe" }
+    { "source": "/methodology", "destination": "/methodology.html" },
+    { "source": "/sources", "destination": "/sources.html" },
+    { "source": "/unsubscribe", "destination": "/api/unsubscribe" },
+    { "source": "/api/request", "destination": "/api/request" },
+    { "source": "/confirm", "destination": "/api/confirm" }
   ],
   "headers": [
     {

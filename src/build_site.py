@@ -68,6 +68,15 @@ def main():
 
     with open(os.path.join(OUT, "raw", "index.html"), "w", encoding="utf-8") as fh:
         fh.write(server_mod.render_raw_index())
+
+    with open(os.path.join(OUT, "methodology.html"), "w", encoding="utf-8") as fh:
+        fh.write(server_mod.render_methodology())
+    with open(os.path.join(OUT, "sources.html"), "w", encoding="utf-8") as fh:
+        fh.write(server_mod.render_sources(db))
+    with open(os.path.join(OUT, "robots.txt"), "w", encoding="utf-8") as fh:
+        fh.write(server_mod.render_robots())
+    with open(os.path.join(OUT, "sitemap.xml"), "w", encoding="utf-8") as fh:
+        fh.write(server_mod.render_sitemap(stats))
     db.close()
 
     n_html = len([f for f in os.listdir(os.path.join(OUT, "reports"))

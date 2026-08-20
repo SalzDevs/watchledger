@@ -6,6 +6,9 @@ Serves the ledger live:
   /api/references.json       index stats as JSON
   /api/reference/<slug>.json one reference's report dict as JSON
   /raw/<path>                raw payload files (the source of truth, browsable)
+  /methodology               readable methodology page
+  /sources                   source registry
+  /robots.txt, /sitemap.xml  search-engine fundamentals
   /static/<path>             shared CSS, JS, fonts
 
 Security rules (from the security guide):
@@ -16,8 +19,17 @@ Security rules (from the security guide):
   - Security headers (CSP, nosniff, frame denial) on every response.
   - Slugs validated before routing to the database.
   - SQLite errors logged server-side only; visitors get a generic page.
+
+Design brief improvements applied:
+  - Only valid references ever show a consumer-facing price range; limited and
+    zero states show coverage status instead (#1, #11).
+  - Homepage is split into Published ranges and Coverage developing (#11).
+  - Market-discovery filters are URL-shareable (#12).
+  - Unknown searches offer request-coverage demand capture (#13).
+  - All listing language uses "observed" not "active"/"verified" (#14).
 """
 
+import datetime
 import http.server
 import json
 import os
@@ -35,6 +47,8 @@ from security import safe_external_url, safe_json_script, safe_slug, safe_text
 import market
 
 PORT = int(os.environ.get("PORT", "8040"))
+
+SITE_BASE = "https://watchledger-delta.vercel.app"
 
 
 def open_db():
@@ -61,7 +75,9 @@ def index_stats(db):
 
     Ranges come from the stored market_snapshot (Phase 5), not recomputed on
     the fly, so the homepage and the report page can never disagree. Each row
-    carries the eligibility state (valid/limited/zero) from Phase 4.
+    carries the eligibility state (valid/limited/zero) from Phase 4. Only
+    valid references carry a published_range; limited/zero states never expose
+    a consumer-facing numeric range (design brief #1).
     """
     rows = q(db, """SELECT DISTINCT m.slug, m.brand, m.ref, m.model, m.case_material
                     FROM references_meta m
@@ -102,15 +118,20 @@ def index_stats(db):
             band_low, band_high, typical = None, None, None
         state = "valid" if elig["range_eligible"] else (
             "zero" if n_exact == 0 else "limited")
+        published = {
+            "low": band_low,
+            "high": band_high,
+            "typical": typical,
+        } if state == "valid" else None
         out.append({
             "slug": slug, "brand": r["brand"], "ref": r["ref"],
             "model": r["model"] or "", "material": r["case_material"] or "",
             "n_listings": n_exact,
-            "median_ask": typical,
-            "low": min(prices) if prices else None,
-            "high": max(prices) if prices else None,
-            "band_low": band_low,
-            "band_high": band_high,
+            "n_dealers": elig["n_dealers"],
+            "observed_low": min(prices) if prices else None,
+            "observed_high": max(prices) if prices else None,
+            "observed_count": len(prices),
+            "published_range": published,
             "n_auction": len(auc_prices),
             "median_hammer": statistics.median(auc_prices) if auc_prices else None,
             "image": images[0] if images else None,
@@ -138,6 +159,12 @@ def img_html(url, alt, cls=None):
 PAGE_HEAD = """<!doctype html>
 <html><head><meta charset="utf-8"><title>watchledger — know what a watch is worth, today</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="WatchLedger computes market ranges for watches deterministically from traceable public dealer listings. No AI, no guesswork.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="WatchLedger — know what a watch is worth, today">
+<meta property="og:description" content="Published market ranges computed deterministically from traceable dealer listings.">
+<meta name="twitter:card" content="summary">
+<link rel="canonical" href="https://watchledger-delta.vercel.app/">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -147,7 +174,7 @@ PAGE_HEAD = """<!doctype html>
 <nav class="nav-links"><a href="/#markets">Explore Watches</a><a href="/#how">Market Trends</a><a href="/#trust">How It Works</a></nav>
 <div class="nav-actions">
 <button class="nav-icon" type="button" data-focus-search aria-label="Search">⌕</button>
-<a href="/raw/" class="btn btn-ghost">Raw data</a>
+<a href="/methodology" class="btn btn-ghost">Methodology</a>
 <a href="/#markets" class="btn btn-primary">Track a watch</a>
 </div>
 </div></header>"""
@@ -156,43 +183,142 @@ PAGE_FOOT = """<footer><div class="footer-inner">
 <div class="col"><div class="logo">watch<span>ledger</span></div>
 <p>Know what a watch is worth — today. Every number on this site is computed from the raw payloads under <a href="/raw/">/raw</a> and links to its source. No AI, no guesswork.</p></div>
 <div class="col"><b>Data</b><a href="/raw/">Raw payloads</a><a href="/api/references.json">JSON API</a><a href="/#markets">Tracked markets</a></div>
-<div class="col"><b>Product</b><a href="/#how">How it works</a><a href="/#trust">Why it's trustworthy</a></div>
+<div class="col"><b>Product</b><a href="/methodology">Methodology</a><a href="/#trust">Why it's trustworthy</a><a href="/#how">How it works</a></div>
 </div></footer></body></html>"""
 
 
-def render_home(stats):
-    hero = next((s for s in sorted(stats, key=lambda s: -(s["n_listings"]))
-                 if s["valid"]), None) or (max(stats, key=lambda s: s["n_listings"])
-                 if stats else None)
+def rng_for(s):
+    """Only valid references show a consumer-facing range (design brief #1)."""
+    if s["valid"] and s["published_range"] and s["published_range"]["low"] is not None:
+        r = s["published_range"]
+        return price_fmt(r["low"]) + " – " + price_fmt(r["high"])
+    if s["state"] == "zero":
+        return "No listings observed yet"
+    return "No published range yet"
 
-    def rng_for(s):
-        if s["valid"]:
-            return price_fmt(s["band_low"]) + " – " + price_fmt(s["band_high"])
-        if s["n_listings"]:
-            return price_fmt(s["low"]) + " – " + price_fmt(s["high"])
-        return "No listings yet"
 
-    def state_badge(s):
-        if s["state"] == "valid":
-            return f'<span class="state-badge state-ok">Published range</span>'
-        if s["state"] == "limited":
-            return f'<span class="state-badge state-warn">Limited data</span>'
-        return f'<span class="state-badge state-empty">No listings</span>'
+def state_badge(s):
+    if s["state"] == "valid":
+        return f'<span class="state-badge state-ok">Published range</span>'
+    if s["state"] == "limited":
+        return f'<span class="state-badge state-warn">Coverage developing</span>'
+    return f'<span class="state-badge state-empty">No listings yet</span>'
 
-    market_cards = []
-    for s in sorted(stats, key=lambda s: -(s["n_listings"])):
-        market_cards.append(f"""
+
+def market_card(s):
+    rng = rng_for(s)
+    meta = f'{s["n_listings"]} observed listings'
+    if s["state"] == "limited":
+        meta += f' · {s["n_dealers"]} dealer{"s" if s["n_dealers"] != 1 else ""}'
+    return f"""
 <a class="market-card" href="/reference/{safe_text(s['slug'])}">
  <div class="market-img">{img_html(s["image"], s["brand"] + " " + s["model"])}</div>
  <div class="market-body">
   <div class="market-name">{safe_text(s['brand'])} {safe_text(s['model'])}</div>
   <div class="market-ref">Ref {safe_text(s['ref'])}</div>
-  <div class="market-range">{rng_for(s)}</div>
+  <div class="market-range">{rng}</div>
   {state_badge(s)}
-  <div class="market-meta"><span class="dot"></span>{s['n_listings']} exact listings · {fmt_ago(s['updated'])}</div>
+  <div class="market-meta"><span class="dot"></span>{meta} · {fmt_ago(s['updated'])}</div>
   <div class="market-sub">{safe_text(s['confidence'])} confidence · methodology v{market.METHODOLOGY_VERSION}</div>
- </div><span class="market-arrow">→</span></a>""")
-    market_cards = "".join(market_cards)
+ </div><span class="market-arrow">→</span></a>"""
+
+
+def render_home(stats, params=None):
+    params = params or {}
+    hero = next((s for s in sorted(stats, key=lambda s: -(s["n_listings"]))
+                 if s["valid"]), None) or (max(stats, key=lambda s: s["n_listings"])
+                 if stats else None)
+
+    # --- discovery filters (design brief #12), URL-shareable ---
+    brand_f = (params.get("brand") or "").strip()
+    scope_f = (params.get("scope") or "all").strip()
+    price_f = (params.get("price") or "").strip()
+    diversity_f = (params.get("diversity") or "").strip()
+
+    filtered = stats
+    if brand_f:
+        filtered = [s for s in filtered if s["brand"].lower() == brand_f.lower()]
+    if scope_f == "published":
+        filtered = [s for s in filtered if s["valid"]]
+    elif scope_f == "developing":
+        filtered = [s for s in filtered if not s["valid"]]
+    if price_f:
+        try:
+            ceiling = float(price_f)
+            filtered = [s for s in filtered if s["valid"] and
+                        s["published_range"] and
+                        s["published_range"]["high"] is not None and
+                        s["published_range"]["high"] <= ceiling]
+        except ValueError:
+            pass
+    if diversity_f:
+        try:
+            min_d = int(diversity_f)
+            filtered = [s for s in filtered if s["n_dealers"] >= min_d]
+        except ValueError:
+            pass
+
+    published = [s for s in sorted(filtered, key=lambda s: -(s["n_listings"]))
+                 if s["valid"]]
+    developing = [s for s in sorted(filtered, key=lambda s: -(s["n_listings"]))
+                  if not s["valid"]]
+
+    def grid(cards):
+        return "".join(market_card(s) for s in cards)
+
+    published_block = ""
+    if published:
+        published_block = f"""
+<section id="published" class="discovery-section">
+ <div class="sec-head">
+  <div><p class="eyebrow">PUBLISHED MARKET RANGES</p>
+  <h2>References with enough independent evidence</h2></div>
+ </div>
+ <div class="market-grid">{grid(published)}</div>
+</section>"""
+
+    developing_block = ""
+    if developing:
+        developing_block = f"""
+<section id="developing" class="discovery-section">
+ <div class="sec-head">
+  <div><p class="eyebrow">COVERAGE DEVELOPING</p>
+  <h2>References WatchLedger is actively tracking</h2></div>
+ </div>
+ <div class="market-grid">{grid(developing)}</div>
+</section>"""
+
+    brands = sorted({s["brand"] for s in stats if s["brand"]})
+    brand_opts = "".join(
+        f'<option value="{safe_text(b)}"{" selected" if b == brand_f else ""}>{safe_text(b)}</option>'
+        for b in brands)
+    qs = urllib.parse.urlencode(
+        {k: v for k, v in {"brand": brand_f, "scope": scope_f, "price": price_f,
+                           "diversity": diversity_f}.items() if v})
+
+    filters_html = f"""<form class="discovery-filters" method="get" action="/">
+ <label>Brand
+  <select name="brand"><option value="">All</option>{brand_opts}</select></label>
+ <label>Status
+  <select name="scope">
+   <option value="all"{" selected" if scope_f == "all" else ""}>All tracked references</option>
+   <option value="published"{" selected" if scope_f == "published" else ""}>Published ranges</option>
+   <option value="developing"{" selected" if scope_f == "developing" else ""}>Coverage developing</option>
+  </select></label>
+ <label>Max price (USD)
+  <input type="number" name="price" min="0" step="500" value="{safe_text(price_f)}" placeholder="any"></label>
+ <label>Min dealers
+  <select name="diversity">
+   <option value="">Any</option>
+   <option value="3"{" selected" if diversity_f == "3" else ""}>3+</option>
+   <option value="5"{" selected" if diversity_f == "5" else ""}>5+</option>
+  </select></label>
+ <button class="btn" type="submit">Apply</button>
+</form>"""
+    if qs:
+        filters_html += (f'<div class="filter-active"><a href="/">Clear filters</a>'
+                         f' · {len(published)} published · '
+                         f'{len(developing)} developing</div>')
 
     recent = sorted(stats, key=lambda s: s["updated"] or 0, reverse=True)[:5]
     recent_rows = ""
@@ -207,7 +333,18 @@ def render_home(stats):
 
     hero_block = ""
     if hero:
-        hrange = rng_for(hero)
+        if hero["valid"] and hero["published_range"]:
+            hrange = rng_for(hero)
+            hlabel = "Published observed asking-price range"
+            hmeta = f"{hero['n_listings']} observed listings · {fmt_ago(hero['updated'])}"
+        elif hero["state"] == "limited":
+            hrange = "Coverage developing"
+            hlabel = f"{hero['n_listings']} observed listings · no published range yet"
+            hmeta = f"{hero['n_dealers']} dealers observed · {fmt_ago(hero['updated'])}"
+        else:
+            hrange = "No listings observed yet"
+            hlabel = "WatchLedger is not yet tracking this reference"
+            hmeta = "coverage requested"
         hero_block = f"""
 <div class="hero-media">
  {img_html(hero.get("image"), hero["brand"] + " " + hero["model"], "hero-img")}
@@ -215,8 +352,8 @@ def render_home(stats):
   <div class="hc-brand">{safe_text(hero['brand'])} {safe_text(hero['model'])}</div>
   <div class="hc-ref">Ref {safe_text(hero['ref'])}</div>
   <div class="hc-range">{hrange}</div>
-  <div class="hc-label">Observed asking-price range</div>
-  <div class="hc-meta"><span class="dot"></span>{hero['n_listings']} exact active listings · {fmt_ago(hero['updated'])}</div>
+  <div class="hc-label">{hlabel}</div>
+  <div class="hc-meta"><span class="dot"></span>{hmeta}</div>
  </div>
 </div>"""
 
@@ -238,7 +375,7 @@ def render_home(stats):
  <div>
   <p class="eyebrow">LIVE WATCH MARKET DATA</p>
   <h1>Know what a watch is worth — <em>today.</em></h1>
-  <p class="hero-copy">Compare live dealer listings, see the current market range, and spot prices that stand out.</p>
+  <p class="hero-copy">Compare live dealer listings, see the published market range, and spot prices that stand out. Ranges are published only when the evidence supports them.</p>
   <div class="search-wrap">
    <div class="search"><span class="icon">⌕</span>
     <input id="q" type="text" placeholder="Search brand, model, or reference number" autocomplete="off">
@@ -256,7 +393,7 @@ def render_home(stats):
 <section class="trust-strip">
  <span>Live dealer listings</span><span class="ts-dot">·</span>
  <span>Reference-level comparison</span><span class="ts-dot">·</span>
- <span>Transparent market ranges</span>
+ <span>Honest, published market ranges</span>
 </section>
 
 <section class="sec-head compact" id="how">
@@ -268,21 +405,22 @@ def render_home(stats):
   <p>Dealer asking prices are pulled from free public sources and stored exactly as returned — with the source URL and fetch time.</p>
   <div class="step-visual sv-collect"><span class="mini-card"></span><span class="mini-card"></span><span class="mini-card"></span><span class="sv-arrow">→</span><span class="mini-tray"></span></div></div>
  <div class="step"><div class="num">02</div><h3>We compare like-for-like watches</h3>
-  <p>Listings for the same reference are grouped and compared by price, condition, and completeness.</p>
+  <p>Listings for the same reference are deduplicated and grouped by exact configuration, condition, and completeness.</p>
   <div class="step-visual sv-compare"><span class="mini-ref">126610LN</span><span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span></div></div>
  <div class="step"><div class="num">03</div><h3>You see where each price sits</h3>
-  <p>The result is a price range, a typical price, and each listing's position — every number traceable to its source.</p>
+  <p>The result is a published range, a typical price, and each listing's position — every number traceable to its source.</p>
   <div class="step-visual sv-range"><span class="sv-track"><span class="sv-band"></span><span class="sv-marker"></span></span><span class="sv-dots"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div></div>
 </div></section>
 
-<section id="markets">
+<section id="discover">
  <div class="sec-head">
-  <div><p class="eyebrow">LIVE MARKET DATA</p>
-  <h2>Markets people are watching</h2></div>
-  <a class="sec-link" href="/api/references.json">Explore all markets →</a>
+  <div><p class="eyebrow">MARKET DISCOVERY</p>
+  <h2>Browse tracked markets</h2></div>
  </div>
- <div class="market-grid">{market_cards}</div>
+ {filters_html}
 </section>
+{published_block}
+{developing_block}
 
 <section class="sec-head compact" id="recent">
  <div><p class="eyebrow">FRESHEST DATA</p>
@@ -295,7 +433,7 @@ def render_home(stats):
  <h2>Why collectors trust this</h2></div></div>
  <div class="trust-grid">
   <div class="trust-item"><div class="ic">⚲</div><h3>Real listings, not estimates</h3>
-   <p>Every price is a real, live dealer listing — with its photo, seller, and a direct link to verify it.</p></div>
+   <p>Every price is a real, observed dealer listing — with its photo, seller, and a direct link to verify it.</p></div>
   <div class="trust-item"><div class="ic">▦</div><h3>Deterministic, not generated</h3>
    <p>No AI, no guesses. Medians, ranges, and positions are computed by fixed rules from the raw payloads.</p></div>
   <div class="trust-item"><div class="ic">✓</div><h3>Traceable to the source</h3>
@@ -326,7 +464,8 @@ def render_raw_index():
         f"{os.path.getsize(os.path.join(RAW_DIR, p)):,} bytes</li>"
         for p in sorted(entries))
     return PAGE_HEAD + """<main class="narrow-page narrow-page-spaced"><h1>Raw data — the source of truth</h1>
-<p class="src">Every payload exactly as returned by the MEW API, with source_url and fetched_at. The ledger and every report derive from these files alone.</p>
+<p class="src">Every payload exactly as returned by the MEW API, with source_url and fetched_at. The ledger and every report derive from these files alone.
+Full payload redistribution may be restricted by source terms; WatchLedger uses these files for internal derivation and links out to each listing for verification.</p>
 <ul>""" + lis + """</ul></main>
 <script src="/static/home.js" defer></script>""" + PAGE_FOOT
 
@@ -353,10 +492,107 @@ and auditable.</p>
 <script src="/static/home.js" defer></script>""" + PAGE_FOOT
 
 
+def render_methodology():
+    return PAGE_HEAD + """<main class="narrow-page narrow-page-spaced"><h1>Methodology</h1>
+<div class="methodology">
+ <h2>What WatchLedger publishes</h2>
+ <p>WatchLedger publishes a market range for a reference only when the observed
+ evidence is strong enough. When it is not, the page says so — a polished range
+ is never more important than an honest one.</p>
+
+ <h3>1. Exact configuration matching</h3>
+ <p>A listing belongs to a reference when the source API matched it to that
+ reference. It counts toward pricing only when its configuration (case material)
+ matches the reference's active configuration. Other configurations are shown
+ separately as variants and never influence the exact range.</p>
+
+ <h3>2. Minimum gates for a published range</h3>
+ <p>A range is published only when all of these pass:</p>
+ <ul>
+  <li>At least %d unique listings (after deduplication)</li>
+  <li>At least %d independent dealers</li>
+  <li>At least %d%% of listings have a published price</li>
+  <li>At least %d%% of listings observed within the last %d hours</li>
+ </ul>
+
+ <h3>3. Duplicate clustering</h3>
+ <p>Rows that are the same listing (same source ID, URL, or fingerprint) are
+ grouped into one cluster. Rows that are likely duplicates (same dealer, same
+ configuration, near-identical price, and similar title) share a cluster at
+ lower confidence. Only the representative listing of each cluster is counted.</p>
+
+ <h3>4. Outlier handling</h3>
+ <p>Prices are combined with a weighted median and weighted 10th/90th
+ percentiles, weighted by freshness and completeness. Outliers flagged by a
+ robust MAD filter (z &gt; %g) are excluded from the range but are never
+ deleted — they stay visible in the ledger and evidence.</p>
+
+ <h3>5. Asking prices versus sold prices</h3>
+ <p>All listing data is asking prices from dealers, not completed sale prices.
+ Auction hammer prices are shown separately and are never mixed into the
+ listing range.</p>
+
+ <h3>6. Freshness policy</h3>
+ <p>Observations older than %d hours stop counting toward freshness. Freshness
+ is reported as the share of listings observed within that window.</p>
+
+ <h3>7. Source coverage limits</h3>
+ <p>Coverage reflects the free public sources WatchLedger can reach today.
+ More sources and more listings raise coverage, which is why developing
+ references show no range yet.</p>
+
+ <h3>8. What &ldquo;Potential deal&rdquo; means</h3>
+ <p>A listing is a potential deal when it sits below the observed comparable
+ range. It is a good lead to investigate, not a guarantee of value.</p>
+
+ <h3>9. What WatchLedger does not verify</h3>
+ <p>WatchLedger does not verify condition claims, authenticity, or the current
+ live status of a listing. All availability is seller-reported at fetch time.
+ We call listings <em>observed</em>, never <em>active</em> or <em>verified</em>.</p>
+
+ <p class="src"><a href="/">Back to the homepage</a></p>
+</div></main>
+<script src="/static/home.js" defer></script>""" % (
+        market.MIN_CLUSTERS, market.MIN_DEALERS,
+        int(market.MIN_PRICE_RATIO * 100), int(market.MIN_FRESHNESS * 100),
+        market.FRESH_WINDOW // 3600, market.ROBUST_Z_CUTOFF,
+        market.FRESH_WINDOW // 3600) + PAGE_FOOT
+
+
+def render_robots():
+    return ("User-agent: *\n"
+            "Allow: /\n"
+            "Disallow: /raw/\n"
+            "Disallow: /api/\n"
+            "Sitemap: https://watchledger-delta.vercel.app/sitemap.xml\n")
+
+
+def render_sitemap(stats):
+    now = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    urls = ['<url><loc>https://watchledger-delta.vercel.app/</loc>'
+            f'<lastmod>{now}</lastmod><priority>1.0</priority></url>',
+            '<url><loc>https://watchledger-delta.vercel.app/methodology</loc>'
+            f'<lastmod>{now}</lastmod><priority>0.8</priority></url>']
+    for s in sorted(stats, key=lambda x: x["slug"]):
+        urls.append(
+            f'<url><loc>https://watchledger-delta.vercel.app/reference/{s["slug"]}</loc>'
+            f'<lastmod>{now}</lastmod><priority>0.9</priority></url>')
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            + "\n".join(urls) + "\n</urlset>\n")
+
+
 def render_track_confirmation(slug, email):
-    return PAGE_HEAD + f"""<main class="narrow-page narrow-page-spaced"><h1>You are tracking this watch</h1>
+    return PAGE_HEAD + f"""<main class="narrow-page narrow-page-spaced"><h1>Confirm your tracking</h1>
 <p>We'll email {safe_text(email)} when the market for {safe_text(slug)} changes meaningfully.
-<a href="/reference/{safe_text(safe_slug(slug))}">Back to the watch page →</a></p></main>
+Please confirm to start tracking. <a href="/reference/{safe_text(safe_slug(slug))}">Back to the watch page →</a></p></main>
+<script src="/static/home.js" defer></script>""" + PAGE_FOOT
+
+
+def render_track_done(email):
+    return PAGE_HEAD + f"""<main class="narrow-page narrow-page-spaced"><h1>You are tracking this watch</h1>
+<p>{safe_text(email)} is now set to receive WatchLedger alerts.
+One-click unsubscribe is available in every email. <a href="/">Browse more markets →</a></p></main>
 <script src="/static/home.js" defer></script>""" + PAGE_FOOT
 
 
@@ -367,8 +603,16 @@ You can resubscribe from any watch page.</p></main>
 <script src="/static/home.js" defer></script>""" + PAGE_FOOT
 
 
+def render_request_done(query):
+    return PAGE_HEAD + f"""<main class="narrow-page narrow-page-spaced"><h1>Coverage requested</h1>
+<p>We've recorded a request for <b>{safe_text(query)}</b>. When WatchLedger starts
+tracking it, this page will appear in search. In the meantime, browse
+<a href="/">tracked markets</a> or request more coverage.</p></main>
+<script src="/static/home.js" defer></script>""" + PAGE_FOOT
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
-    server_version = "watchledger/0.2"
+    server_version = "watchledger/0.3"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
@@ -428,6 +672,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             if path.startswith("/api/track"):
                 self.route_track(params)
+            elif path.startswith("/api/request"):
+                self.route_request(params)
             elif path.startswith("/unsubscribe"):
                 self.send(404, render_not_found("Unsubscribe link"))
             else:
@@ -455,33 +701,63 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send(404, json.dumps({"error": "unknown reference"}),
                           "application/json; charset=utf-8")
                 return
-            import hashlib, secrets
+            alerts = [a for a in params.get("alerts", [])
+                      if a in {"new_listing", "below_typical", "range_change",
+                               "coverage_ready"}]
+            if not alerts:
+                alerts = ["new_listing"]
+            import hashlib
             token = hashlib.sha256(
                 (email + secrets.token_hex(16)).encode()).hexdigest()
+            confirm_token = hashlib.sha256(
+                (token + "confirm" + secrets.token_hex(8)).encode()).hexdigest()
             db.execute(
-                "INSERT OR IGNORE INTO watch_users (id, email, unsubscribe_token,"
-                " created_at) VALUES (?,?,?,?)",
-                (email, email, token, time.time()))
+                "INSERT OR REPLACE INTO watch_users (id, email, unsubscribe_token,"
+                " confirm_token, created_at) VALUES (?,?,?,?,?)",
+                (email, email, token, confirm_token, time.time()))
             db.execute(
                 "INSERT OR IGNORE INTO watchlist_item (id, user_id,"
                 " reference_slug, created_at, active) VALUES (?,?,?,?,1)",
                 (f"{email}:{slug}", email, slug, time.time()))
-            db.execute(
-                "INSERT OR IGNORE INTO alert_preference (id, watchlist_item_id,"
-                " alert_type, enabled) VALUES (?,?,?,1)",
-                (f"{email}:{slug}:price", f"{email}:{slug}", "price"))
+            for t in alerts:
+                db.execute(
+                    "INSERT OR REPLACE INTO alert_preference (id, watchlist_item_id,"
+                    " alert_type, enabled) VALUES (?,?,?,1)",
+                    (f"{email}:{slug}:{t}", f"{email}:{slug}", t))
             db.commit()
             db.close()
-            self.send(200, json.dumps({"ok": True, "slug": slug}),
-                      "application/json; charset=utf-8")
+            self.send(200, json.dumps({
+                "ok": True, "slug": slug,
+                "confirm_url": f"/confirm?token={confirm_token}",
+                "alerts": alerts,
+            }), "application/json; charset=utf-8")
             return
         self.send(400, json.dumps({"error": "unknown action"}),
+                  "application/json; charset=utf-8")
+
+    def route_request(self, params):
+        query = (params.get("query", [""])[0] or "").strip()[:200]
+        if not query:
+            self.send(400, json.dumps({"error": "query required"}),
+                      "application/json; charset=utf-8")
+            return
+        db = open_db()
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS coverage_request ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL,"
+            " requested_at REAL)")
+        db.execute("INSERT INTO coverage_request (query, requested_at) "
+                   "VALUES (?,?)", (query, time.time()))
+        db.commit()
+        db.close()
+        self.send(200, json.dumps({"ok": True, "query": query}),
                   "application/json; charset=utf-8")
 
     def route(self, path):
         if path == "/" or path == "/index.html":
             db = open_db()
-            self.send(200, render_home(index_stats(db)))
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            self.send(200, render_home(index_stats(db), params))
             db.close()
         elif path == "/raw" or path == "/raw/":
             self.send(200, render_raw_index())
@@ -489,6 +765,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             db = open_db()
             self.send(200, render_sources(db))
             db.close()
+        elif path == "/methodology":
+            self.send(200, render_methodology())
+        elif path == "/robots.txt":
+            self.send(200, render_robots(), "text/plain; charset=utf-8")
+        elif path == "/sitemap.xml":
+            db = open_db()
+            self.send(200, render_sitemap(index_stats(db)),
+                      "application/xml; charset=utf-8")
+            db.close()
+        elif path == "/confirm":
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            token = (params.get("token", [""])[0] or "").strip()
+            db = open_db()
+            row = q(db, "SELECT email FROM watch_users WHERE confirm_token=?",
+                    (token,))
+            if not row:
+                db.close()
+                self.send(404, render_not_found("Confirmation link"))
+                return
+            db.execute("UPDATE watch_users SET confirmed=1 WHERE email=?",
+                       (row[0][0],))
+            db.commit()
+            email = row[0][0]
+            db.close()
+            self.send(200, render_track_done(email))
         elif path.startswith("/unsubscribe"):
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             token = (params.get("token", [""])[0] or "").strip()
@@ -543,6 +844,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 self.send(200, render(d))
         elif path.startswith("/api/track"):
+            self.send(405, "method not allowed", "text/plain; charset=utf-8")
+        elif path.startswith("/api/request"):
             self.send(405, "method not allowed", "text/plain; charset=utf-8")
         elif path.startswith("/static/"):
             self.serve_static(path[len("/static/"):])

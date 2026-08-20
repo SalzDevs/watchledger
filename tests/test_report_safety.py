@@ -23,7 +23,11 @@ def test_hostile_title_is_escaped_and_does_not_run(db):
                    12000, "Good Dealer", None, None, None)
     html = build_and_render(db)
     assert "<img src=x onerror=alert(1)>" not in html
-    assert "&lt;img src=x onerror=alert(1)&gt;" in html
+    # The raw source title now lives only in the JSON data block (drawer).
+    block = re.search(r'<script id="listing-data" type="application/json">(.*?)</script>',
+                      html, re.S)
+    assert block
+    assert "\\u003cimg src=x onerror=alert(1)\\u003e" in block.group(1)
 
 
 def test_hostile_title_cannot_break_json_data_block(db):

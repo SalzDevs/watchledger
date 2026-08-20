@@ -95,6 +95,9 @@
     }
 
     drawerBody.appendChild(element("h2", "drawer-brand", listing.title || "Watch listing"));
+    if (listing.subtitle) {
+      drawerBody.appendChild(element("p", "drawer-subtitle", listing.subtitle));
+    }
     drawerBody.appendChild(element("p", "drawer-price", priceText(listing.price)));
 
     const kind = badgeClass(listing.kind);
@@ -104,6 +107,13 @@
       element("span", "sub", listing.sub || "Limited comparable data")
     );
     drawerBody.appendChild(badge);
+
+    if (listing.exclusion_reason) {
+      const excluded = element("div", "drawer-excluded");
+      excluded.appendChild(element("b", "", "Excluded from market range"));
+      excluded.appendChild(element("span", "", ` — ${listing.exclusion_reason}`));
+      drawerBody.appendChild(excluded);
+    }
 
     // --- match provenance (Phase 2) ---
     const provenance = element("section", "drawer-section");
@@ -116,6 +126,14 @@
     addDetailRow(ptable, "Observed", agoText(listing.fetched_at));
     provenance.appendChild(ptable);
     drawerBody.appendChild(provenance);
+
+    // --- original source title, kept for provenance (design brief #6) ---
+    if (listing.raw_title && listing.raw_title !== listing.title) {
+      const raw = element("section", "drawer-section");
+      raw.appendChild(element("h3", "", "Original source title"));
+      raw.appendChild(element("p", "src", listing.raw_title));
+      drawerBody.appendChild(raw);
+    }
 
     const explanation = element("section", `drawer-section tint-${kind}`);
     explanation.appendChild(element("h3", "", "Why this stands out"));
@@ -319,7 +337,10 @@
       event.preventDefault();
       const email = trackForm.querySelector('input[name=email]').value;
       const slug = trackForm.dataset.slug;
+      const alerts = [...trackForm.querySelectorAll('input[name=alerts]:checked')]
+        .map((box) => box.value);
       const body = new URLSearchParams({ action: "track", email, slug });
+      alerts.forEach((a) => body.append("alerts", a));
       fetch("/api/track", { method: "POST", body })
         .then((res) => {
           if (!res.ok) throw new Error("tracking failed");

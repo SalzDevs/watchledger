@@ -32,6 +32,13 @@ def live_server(tmp_path, monkeypatch):
                        f"Listing {i}", 10000 + i * 500, f"Dealer {i}")
     run_pipeline(conn, slug="rolex-submariner-126610ln", ref="126610LN",
                  model="Submariner")
+    insert_ref(conn, slug="rolex-explorer-ii-226570-polar", ref="226570",
+               model="Explorer II", material="Steel")
+    for i in range(2):
+        insert_listing(conn, f"e{i}", "rolex-explorer-ii-226570-polar",
+                       f"Explorer {i}", 10500 + i * 500, f"Dealer {i}")
+    run_pipeline(conn, slug="rolex-explorer-ii-226570-polar", ref="226570",
+                 model="Explorer II", material="Steel")
     conn.commit()
     conn.close()
 
@@ -137,7 +144,8 @@ def test_api_returns_valid_json(live_server):
         data = jsonlib.load(resp)
     assert data["n_exact"] == 8
     assert data["valid"] is True
-    assert data["confidence_state"] == "High"
+    # 8 listings -> Medium coverage, so overall can never exceed Medium.
+    assert data["confidence_state"] == "Medium"
 
 
 def test_api_requires_existing_slug(live_server):
