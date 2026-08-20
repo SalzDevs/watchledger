@@ -1,52 +1,49 @@
-"""Normalize raw payloads into the SQLite ledger.
+"""Normalize raw payloads into the SQLite ledger and run the market pipeline.
 
 The ledger is a derived view of the raw JSON files. Every normalized row
 carries the source URL and fetch timestamp of the payload it came from,
 so each number in a report can be traced to its origin.
+
+Pipeline (design brief Phases 2-6):
+  1. Insert references_meta / listings / auction_lots (validated URLs).
+  2. Build canonical watch_reference + watch_configuration entities.
+  3. Assign every listing a match_level and match_reason.
+  4. Cluster duplicate listings; pick a representative per cluster.
+  5. Evaluate eligibility gates and confidence dimensions per reference.
+  6. Calculate and store a reproducible market_snapshot per configuration.
+  7. Append listing_observation rows for history.
+  8. Register observed sources.
 """
 
 import json
 import os
 import sqlite3
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import RAW_DIR, DB_PATH
 from security import safe_external_url
+from schema import SCHEMA
+import market
+
+
+_MANAGED_TABLES = (
+    "references_meta", "listings", "auction_lots", "watch_reference",
+    "watch_configuration", "listing_cluster", "source_fetch",
+    "listing_observation", "market_snapshot", "source", "watch_users",
+    "watchlist_item", "alert_preference", "alert_delivery",
+)
 
 
 def connect():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = sqlite3.connect(DB_PATH)
-    db.executescript("""
-    PRAGMA journal_mode=WAL;
-    CREATE TABLE IF NOT EXISTS references_meta (
-        slug TEXT PRIMARY KEY,
-        brand TEXT, ref TEXT, model TEXT, case_material TEXT,
-        url TEXT, source_url TEXT, fetched_at REAL
-    );
-    CREATE TABLE IF NOT EXISTS listings (
-        id TEXT PRIMARY KEY,
-        slug TEXT NOT NULL,
-        title TEXT, price_usd REAL, currency TEXT,
-        condition TEXT, box_papers TEXT, case_material TEXT,
-        case_size_mm REAL, movement TEXT, year INTEGER,
-        merchant_slug TEXT, merchant_name TEXT, available INTEGER,
-        image_url TEXT, detail_url TEXT, buy_url TEXT,
-        exact INTEGER DEFAULT 0,
-        source_url TEXT, fetched_at REAL
-    );
-    CREATE TABLE IF NOT EXISTS auction_lots (
-        slug TEXT PRIMARY KEY,
-        brand TEXT, reference TEXT, model TEXT, case_material TEXT,
-        hammer_usd REAL, year_sold INTEGER, venue TEXT,
-        lot_url TEXT, ref_slug TEXT,
-        source_url TEXT, fetched_at REAL
-    );
-    CREATE INDEX IF NOT EXISTS idx_listings_slug ON listings(slug);
-    CREATE INDEX IF NOT EXISTS idx_listings_exact ON listings(slug, exact);
-    CREATE INDEX IF NOT EXISTS idx_auctions_ref ON auction_lots(brand, reference);
-    """)
+    cur = db.cursor()
+    for t in _MANAGED_TABLES:
+        cur.execute(f"DROP TABLE IF EXISTS {t}")
+    cur.execute("DROP VIEW IF EXISTS v_listing_market")
+    db.executescript(SCHEMA)
     return db
 
 
@@ -79,6 +76,8 @@ def main():
                  f"{index.get('source_url','')}", index.get("fetched_at")))
             n_refs += 1
 
+    listings = []  # rows as (id, slug, ..., price_usd, ..., available, ...)
+
     # per-reference payloads -> listings + auction_lots
     for fname in sorted(os.listdir(os.path.join(RAW_DIR, "references"))):
         if not fname.endswith(".json"):
@@ -92,37 +91,60 @@ def main():
             safe_image_url = safe_external_url(l.get("image_url"))
             safe_detail_url = safe_external_url(l.get("detail_url"))
             safe_buy_url = safe_external_url(l.get("buy_url"))
+            lid = str(l.get("id"))
             cur.execute(
-                "INSERT OR REPLACE INTO listings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (l.get("id"), slug, l.get("title"), l.get("price_usd"),
+                "INSERT OR REPLACE INTO listings "
+                "(id, slug, title, price_usd, currency, condition, "
+                "box_papers, case_material, case_size_mm, movement, year, "
+                "merchant_slug, merchant_name, available, image_url, "
+                "detail_url, buy_url, exact, source_url, fetched_at, "
+                "source_name, source_listing_id, canonical_url, "
+                "listing_fingerprint) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (lid, slug, l.get("title"), l.get("price_usd"),
                  l.get("currency"), l.get("condition"), l.get("box_papers"),
                  l.get("case_material"), l.get("case_size_mm"),
                  l.get("movement"), l.get("year"), l.get("merchant_slug"),
                  l.get("merchant_name"),
                  1 if l.get("available") else 0,
                  safe_image_url, safe_detail_url, safe_buy_url,
-                 0, src, ts))
+                 0, src, ts, "mostexpensivewatches.net", lid,
+                 safe_buy_url or safe_detail_url,
+                 market.fingerprint_from_url(safe_buy_url or safe_detail_url)))
+            listings.append(cur.lastrowid or lid)
             n_list += 1
 
         # exact-match listings from the search endpoint -> exact=1.
-        # These replace the broad per-reference sample as the market baseline.
         exact = load_raw("exact", fname[:-5])
         if exact:
             for l in (exact.get("payload") or {}).get("items") or []:
                 safe_image_url = safe_external_url(l.get("image_url"))
                 safe_detail_url = safe_external_url(l.get("detail_url"))
                 safe_buy_url = safe_external_url(l.get("buy_url"))
+                lid = str(l.get("id"))
                 cur.execute(
-                    "INSERT OR REPLACE INTO listings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (l.get("id"), slug, l.get("title"), l.get("price_usd"),
+                    "INSERT OR REPLACE INTO listings "
+                    "(id, slug, title, price_usd, currency, condition, "
+                    "box_papers, case_material, case_size_mm, movement, year, "
+                    "merchant_slug, merchant_name, available, image_url, "
+                    "detail_url, buy_url, exact, source_url, fetched_at, "
+                    "source_name, source_listing_id, canonical_url, "
+                    "listing_fingerprint) VALUES "
+                    "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (lid, slug, l.get("title"), l.get("price_usd"),
                      l.get("currency"), l.get("condition"), l.get("box_papers"),
                      l.get("case_material"), l.get("case_size_mm"),
                      l.get("movement"), l.get("year"), l.get("merchant_slug"),
                      l.get("merchant_name"),
                      1 if l.get("available") else 0,
                      safe_image_url, safe_detail_url, safe_buy_url,
-                     1, exact.get("source_url"), exact.get("fetched_at")))
+                     1, exact.get("source_url"), exact.get("fetched_at"),
+                     "mostexpensivewatches.net", lid,
+                     safe_buy_url or safe_detail_url,
+                     market.fingerprint_from_url(safe_buy_url or safe_detail_url)))
+                listings.append(cur.lastrowid or lid)
                 n_list += 1
+
         for a in payload.get("auction_lots") or []:
             cur.execute(
                 "INSERT OR REPLACE INTO auction_lots VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -133,7 +155,6 @@ def main():
             n_auc += 1
 
     # full auction dataset -> auction_lots (all brands, for joins).
-    # Do not clobber rows already linked to a reference (ref_slug set).
     full = load_raw("index", "auctions_full")
     if full:
         for a in (full.get("payload") or {}).get("auction_lots") or []:
@@ -146,7 +167,60 @@ def main():
             n_auc += 1
 
     db.commit()
-    print(f"ledger: {n_refs} references, {n_list} listings, {n_auc} auction lots")
+
+    # ---- Phase 2: canonical entities + matching ----
+    refs_meta = cur.execute(
+        "SELECT slug, brand, ref, model, case_material, url, source_url, "
+        "fetched_at FROM references_meta").fetchall()
+    all_listings = cur.execute("SELECT * FROM listings").fetchall()
+
+    market.build_canonical(db, refs_meta, all_listings)
+
+    refs = {}
+    for slug, brand, ref, model, material, url, src, ts in refs_meta:
+        refs[slug] = {
+            "ref_key": market.normalize_reference(ref),
+            "active_key": "",
+            "brand": brand,
+        }
+    for row in cur.execute("SELECT reference_id, configuration_key, active "
+                           "FROM watch_configuration").fetchall():
+        if row[2]:
+            refs[row[0]]["active_key"] = row[1]
+
+    market.match_all(db, refs)
+
+    # ---- Phase 3: deduplicate ----
+    market.cluster_listings(db, all_listings)
+
+    # ---- Phase 4/5/6: eligibility, pricing, snapshots ----
+    slugs = [r[0] for r in cur.execute(
+        "SELECT DISTINCT slug FROM listings ORDER BY slug")]
+    n_snapshots = 0
+    for slug in slugs:
+        elig = market.eligibility(db, slug)
+        cfg = cur.execute(
+            "SELECT id FROM watch_configuration WHERE reference_id=? AND active=1",
+            (slug,)).fetchone()
+        cfg_id = cfg[0] if cfg else slug
+        calc = market.calculate_market(db, slug, elig)
+        if market.save_snapshot(db, cfg_id, calc, elig):
+            n_snapshots += 1
+
+    # ---- Phase 6: observations ----
+    fetched_at = time.time()
+    src_url = index.get("source_url", "") if index else ""
+    market.record_observations(db, all_listings, src_url, fetched_at)
+
+    # ---- Phase 10: sources ----
+    merchant_pairs = cur.execute(
+        "SELECT DISTINCT merchant_name, merchant_slug FROM listings "
+        "WHERE merchant_name IS NOT NULL AND merchant_slug IS NOT NULL").fetchall()
+    market.register_sources(db, "mostexpensivewatches.net", merchant_pairs)
+
+    db.commit()
+    print(f"ledger: {n_refs} references, {n_list} listings, {n_auc} auction lots, "
+          f"{n_snapshots} snapshots")
 
 
 if __name__ == "__main__":

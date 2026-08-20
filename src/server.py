@@ -21,6 +21,7 @@ Security rules (from the security guide):
 import http.server
 import json
 import os
+import secrets
 import sqlite3
 import statistics
 import sys
@@ -31,6 +32,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import DB_PATH, RAW_DIR, STATIC_DIR
 from report import build_report, price_fmt, q, render
 from security import safe_external_url, safe_json_script, safe_slug, safe_text
+import market
 
 PORT = int(os.environ.get("PORT", "8040"))
 
@@ -55,7 +57,12 @@ def fmt_ago(ts):
 
 
 def index_stats(db):
-    """Per-reference summary rows for the homepage (tracked refs only)."""
+    """Per-reference summary rows for the homepage.
+
+    Ranges come from the stored market_snapshot (Phase 5), not recomputed on
+    the fly, so the homepage and the report page can never disagree. Each row
+    carries the eligibility state (valid/limited/zero) from Phase 4.
+    """
     rows = q(db, """SELECT DISTINCT m.slug, m.brand, m.ref, m.model, m.case_material
                     FROM references_meta m
                     LEFT JOIN listings l ON l.slug = m.slug
@@ -65,32 +72,55 @@ def index_stats(db):
     out = []
     for r in rows:
         slug = r["slug"]
-        lst = q(db, "SELECT price_usd, image_url, fetched_at FROM listings WHERE slug=?",
-                (slug,))
-        prices = [x[0] for x in lst if x[0] is not None]
-        images = [x[1] for x in lst if x[1]]
-        stamps = [x[2] for x in lst if x[2]]
-        auc = q(db, "SELECT hammer_usd FROM auction_lots WHERE ref_slug=?", (slug,))
-        auc_prices = [x[0] for x in auc if x[0] is not None]
-        n = len(prices)
-        band = None
-        if n >= 5:
-            sp = sorted(prices)
-            band = (sp[int(n * 0.1)], sp[min(n - 1, int(n * 0.9))])
+        cfg = q(db, "SELECT id FROM watch_configuration WHERE reference_id=? "
+                    "AND active=1", (slug,))
+        snap = market.latest_snapshot(db, cfg[0][0]) if cfg else None
+        elig = market.eligibility(db, slug)
+        n_exact = elig["n_clusters"]
+        prices = [x[0] for x in q(db,
+                   "SELECT l.price_usd FROM listings l "
+                   "JOIN listing_cluster c ON c.representative_listing_id=l.id "
+                   "WHERE l.slug=? AND l.match_level='exact_configuration'",
+                   (slug,)) if x[0] is not None]
+        images = [x[0] for x in q(db,
+                  "SELECT l.image_url FROM listings l "
+                  "JOIN listing_cluster c ON c.representative_listing_id=l.id "
+                  "WHERE l.slug=? AND l.match_level='exact_configuration' "
+                  "AND l.image_url IS NOT NULL LIMIT 1", (slug,))]
+        stamps = [x[0] for x in q(db,
+                  "SELECT l.fetched_at FROM listings l "
+                  "JOIN listing_cluster c ON c.representative_listing_id=l.id "
+                  "WHERE l.slug=? AND l.match_level='exact_configuration' "
+                  "AND l.fetched_at IS NOT NULL", (slug,))]
+        auc_prices = [x[0] for x in q(db,
+                      "SELECT hammer_usd FROM auction_lots WHERE ref_slug=?",
+                      (slug,)) if x[0] is not None]
+        if snap:
+            band_low, band_high = snap[7], snap[9]
+            typical = snap[8]
+        else:
+            band_low, band_high, typical = None, None, None
+        state = "valid" if elig["range_eligible"] else (
+            "zero" if n_exact == 0 else "limited")
         out.append({
             "slug": slug, "brand": r["brand"], "ref": r["ref"],
             "model": r["model"] or "", "material": r["case_material"] or "",
-            "n_listings": n,
-            "median_ask": statistics.median(prices) if prices else None,
+            "n_listings": n_exact,
+            "median_ask": typical,
             "low": min(prices) if prices else None,
             "high": max(prices) if prices else None,
-            "band_low": band[0] if band else None,
-            "band_high": band[1] if band else None,
+            "band_low": band_low,
+            "band_high": band_high,
             "n_auction": len(auc_prices),
             "median_hammer": statistics.median(auc_prices) if auc_prices else None,
             "image": images[0] if images else None,
             "updated": max(stamps) if stamps else None,
-            "confidence": "High" if n >= 15 else ("Medium" if n >= 5 else "Low"),
+            "confidence": elig["overall"],
+            "coverage": elig["coverage"],
+            "diversity": elig["diversity"],
+            "freshness_dim": elig["freshness_dim"],
+            "state": state,
+            "valid": elig["range_eligible"],
         })
     return out
 
@@ -131,38 +161,53 @@ PAGE_FOOT = """<footer><div class="footer-inner">
 
 
 def render_home(stats):
-    hero = max(stats, key=lambda s: s["n_listings"]) if stats else None
+    hero = next((s for s in sorted(stats, key=lambda s: -(s["n_listings"]))
+                 if s["valid"]), None) or (max(stats, key=lambda s: s["n_listings"])
+                 if stats else None)
+
+    def rng_for(s):
+        if s["valid"]:
+            return price_fmt(s["band_low"]) + " – " + price_fmt(s["band_high"])
+        if s["n_listings"]:
+            return price_fmt(s["low"]) + " – " + price_fmt(s["high"])
+        return "No listings yet"
+
+    def state_badge(s):
+        if s["state"] == "valid":
+            return f'<span class="state-badge state-ok">Published range</span>'
+        if s["state"] == "limited":
+            return f'<span class="state-badge state-warn">Limited data</span>'
+        return f'<span class="state-badge state-empty">No listings</span>'
 
     market_cards = []
     for s in sorted(stats, key=lambda s: -(s["n_listings"])):
-        rng = price_fmt(s["band_low"] or s["low"]) + " – " + price_fmt(s["band_high"] or s["high"])
         market_cards.append(f"""
 <a class="market-card" href="/reference/{safe_text(s['slug'])}">
  <div class="market-img">{img_html(s["image"], s["brand"] + " " + s["model"])}</div>
  <div class="market-body">
   <div class="market-name">{safe_text(s['brand'])} {safe_text(s['model'])}</div>
   <div class="market-ref">Ref {safe_text(s['ref'])}</div>
-  <div class="market-range">{rng}</div>
+  <div class="market-range">{rng_for(s)}</div>
+  {state_badge(s)}
   <div class="market-meta"><span class="dot"></span>{s['n_listings']} exact listings · {fmt_ago(s['updated'])}</div>
-  <div class="market-sub">{safe_text(s['confidence'])} confidence · snapshot data</div>
+  <div class="market-sub">{safe_text(s['confidence'])} confidence · methodology v{market.METHODOLOGY_VERSION}</div>
  </div><span class="market-arrow">→</span></a>""")
     market_cards = "".join(market_cards)
 
     recent = sorted(stats, key=lambda s: s["updated"] or 0, reverse=True)[:5]
     recent_rows = ""
     for s in recent:
-        rng = price_fmt(s["band_low"] or s["low"]) + " – " + price_fmt(s["band_high"] or s["high"])
         recent_rows += f"""
 <a class="recent-row" href="/reference/{safe_text(s['slug'])}">
  {img_html(s["image"], "", "recent-thumb")}
  <div><div class="recent-name">{safe_text(s['brand'])} {safe_text(s['model'])}</div>
  <div class="recent-ref">Ref {safe_text(s['ref'])}</div></div>
- <div class="recent-range"><div class="p">{rng}</div><div class="m">{s['n_listings']} listings · updated {fmt_ago(s['updated'])}</div></div>
+ <div class="recent-range"><div class="p">{rng_for(s)}</div><div class="m">{s['n_listings']} listings · updated {fmt_ago(s['updated'])}</div></div>
  <span class="recent-arrow">→</span></a>"""
 
     hero_block = ""
     if hero:
-        hrange = price_fmt(hero["band_low"] or hero["low"]) + " – " + price_fmt(hero["band_high"] or hero["high"])
+        hrange = rng_for(hero)
         hero_block = f"""
 <div class="hero-media">
  {img_html(hero.get("image"), hero["brand"] + " " + hero["model"], "hero-img")}
@@ -181,8 +226,9 @@ def render_home(stats):
             "brand": s["brand"] or "",
             "model": s["model"] or "",
             "ref": s["ref"] or "",
-            "range": price_fmt(s["band_low"] or s["low"]) + " – " + price_fmt(s["band_high"] or s["high"]),
+            "range": rng_for(s),
             "image_url": safe_external_url(s["image"]),
+            "state": s["state"],
         }
         for s in stats
     ]
@@ -285,6 +331,42 @@ def render_raw_index():
 <script src="/static/home.js" defer></script>""" + PAGE_FOOT
 
 
+def render_sources(db):
+    rows = q(db, """SELECT name, domain, access_method, permission_status,
+                    image_usage_status, attribution_requirements,
+                    last_terms_reviewed_at FROM source ORDER BY domain""")
+    lis = "".join(
+        f"""<tr><td>{safe_text(r[0] or r[1])}</td>
+            <td class="price-cell">{safe_text(r[1])}</td>
+            <td>{safe_text(r[2] or '—')}</td>
+            <td>{safe_text(r[3] or '—')}</td>
+            <td>{safe_text(r[4] or '—')}</td>
+            <td>{safe_text(r[5] or '—')}</td></tr>"""
+        for r in rows)
+    return PAGE_HEAD + f"""<main class="narrow-page narrow-page-spaced"><h1>Data sources</h1>
+<p class="src">Every listing on this site originates from a source below. Access method,
+permission, and image-usage status are recorded here so each provider's terms are visible
+and auditable.</p>
+<table class="listing-table"><thead><tr><th>Source</th><th>Domain</th><th>Access</th>
+<th>Permission</th><th>Image usage</th><th>Attribution</th></tr></thead>
+<tbody>{lis}</tbody></table></main>
+<script src="/static/home.js" defer></script>""" + PAGE_FOOT
+
+
+def render_track_confirmation(slug, email):
+    return PAGE_HEAD + f"""<main class="narrow-page narrow-page-spaced"><h1>You are tracking this watch</h1>
+<p>We'll email {safe_text(email)} when the market for {safe_text(slug)} changes meaningfully.
+<a href="/reference/{safe_text(safe_slug(slug))}">Back to the watch page →</a></p></main>
+<script src="/static/home.js" defer></script>""" + PAGE_FOOT
+
+
+def render_unsubscribed(email):
+    return PAGE_HEAD + f"""<main class="narrow-page narrow-page-spaced"><h1>You are unsubscribed</h1>
+<p>{safe_text(email)} will no longer receive watchledger alerts.
+You can resubscribe from any watch page.</p></main>
+<script src="/static/home.js" defer></script>""" + PAGE_FOOT
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "watchledger/0.2"
 
@@ -338,6 +420,64 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
 
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length).decode("utf-8") if length else ""
+        path = urllib.parse.urlparse(self.path).path
+        params = urllib.parse.parse_qs(body)
+        try:
+            if path.startswith("/api/track"):
+                self.route_track(params)
+            elif path.startswith("/unsubscribe"):
+                self.send(404, render_not_found("Unsubscribe link"))
+            else:
+                self.send(404, render_not_found(path))
+        except sqlite3.Error:
+            self.log_error("database request failed")
+            self.send(500, json.dumps({"error": "internal error"}),
+                      "application/json; charset=utf-8")
+        except BrokenPipeError:
+            pass
+
+    def route_track(self, params):
+        action = params.get("action", [""])[0]
+        email = (params.get("email", [""])[0] or "").strip().lower()
+        slug = safe_slug(params.get("slug", [""])[0])
+        if action == "track":
+            if not email or "@" not in email or not slug:
+                self.send(400, json.dumps({"error": "email and slug required"}),
+                          "application/json; charset=utf-8")
+                return
+            db = open_db()
+            meta = q(db, "SELECT slug FROM references_meta WHERE slug=?", (slug,))
+            if not meta:
+                db.close()
+                self.send(404, json.dumps({"error": "unknown reference"}),
+                          "application/json; charset=utf-8")
+                return
+            import hashlib, secrets
+            token = hashlib.sha256(
+                (email + secrets.token_hex(16)).encode()).hexdigest()
+            db.execute(
+                "INSERT OR IGNORE INTO watch_users (id, email, unsubscribe_token,"
+                " created_at) VALUES (?,?,?,?)",
+                (email, email, token, time.time()))
+            db.execute(
+                "INSERT OR IGNORE INTO watchlist_item (id, user_id,"
+                " reference_slug, created_at, active) VALUES (?,?,?,?,1)",
+                (f"{email}:{slug}", email, slug, time.time()))
+            db.execute(
+                "INSERT OR IGNORE INTO alert_preference (id, watchlist_item_id,"
+                " alert_type, enabled) VALUES (?,?,?,1)",
+                (f"{email}:{slug}:price", f"{email}:{slug}", "price"))
+            db.commit()
+            db.close()
+            self.send(200, json.dumps({"ok": True, "slug": slug}),
+                      "application/json; charset=utf-8")
+            return
+        self.send(400, json.dumps({"error": "unknown action"}),
+                  "application/json; charset=utf-8")
+
     def route(self, path):
         if path == "/" or path == "/index.html":
             db = open_db()
@@ -345,6 +485,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             db.close()
         elif path == "/raw" or path == "/raw/":
             self.send(200, render_raw_index())
+        elif path == "/sources" or path == "/sources/":
+            db = open_db()
+            self.send(200, render_sources(db))
+            db.close()
+        elif path.startswith("/unsubscribe"):
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            token = (params.get("token", [""])[0] or "").strip()
+            db = open_db()
+            row = q(db, "SELECT email FROM watch_users WHERE unsubscribe_token=?",
+                    (token,))
+            if not row:
+                db.close()
+                self.send(404, render_not_found("Unsubscribe link"))
+                return
+            db.execute("DELETE FROM alert_preference WHERE watchlist_item_id IN "
+                       "(SELECT id FROM watchlist_item WHERE user_id=?)",
+                       (row[0][0],))
+            db.execute("DELETE FROM watchlist_item WHERE user_id=?", (row[0][0],))
+            db.execute("DELETE FROM watch_users WHERE email=?", (row[0][0],))
+            db.commit()
+            db.close()
+            self.send(200, render_unsubscribed(row[0][0]))
         elif path.startswith("/raw/"):
             self.serve_raw(path[5:])
         elif path == "/api/references.json":
@@ -352,7 +514,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(200, index_stats(db))
             db.close()
         elif path.startswith("/api/reference/"):
-            slug = safe_slug(path[len("/api/reference/"):])
+            raw = path[len("/api/reference/"):]
+            if raw.endswith(".json"):
+                raw = raw[:-5]
+            slug = safe_slug(raw)
             if not slug:
                 self.send(404, json.dumps({"error": "unknown reference"}),
                           "application/json; charset=utf-8")
@@ -377,6 +542,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send(404, render_not_found(slug))
             else:
                 self.send(200, render(d))
+        elif path.startswith("/api/track"):
+            self.send(405, "method not allowed", "text/plain; charset=utf-8")
         elif path.startswith("/static/"):
             self.serve_static(path[len("/static/"):])
         else:

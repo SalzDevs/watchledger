@@ -1,9 +1,11 @@
+import json as jsonlib
 import os
 import re
 import sqlite3
 import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -14,25 +16,8 @@ import pytest
 
 import config
 import server as server_mod
-
-SCHEMA = """
-CREATE TABLE references_meta (
-    slug TEXT PRIMARY KEY, brand TEXT, ref TEXT, model TEXT,
-    case_material TEXT, url TEXT, source_url TEXT, fetched_at REAL
-);
-CREATE TABLE listings (
-    id TEXT PRIMARY KEY, slug TEXT NOT NULL, title TEXT, price_usd REAL,
-    currency TEXT, condition TEXT, box_papers TEXT, case_material TEXT,
-    case_size_mm REAL, movement TEXT, year INTEGER, merchant_slug TEXT,
-    merchant_name TEXT, available INTEGER, image_url TEXT, detail_url TEXT,
-    buy_url TEXT, exact INTEGER DEFAULT 0, source_url TEXT, fetched_at REAL
-);
-CREATE TABLE auction_lots (
-    slug TEXT PRIMARY KEY, brand TEXT, reference TEXT, model TEXT,
-    case_material TEXT, hammer_usd REAL, year_sold INTEGER, venue TEXT,
-    lot_url TEXT, ref_slug TEXT, source_url TEXT, fetched_at REAL
-);
-"""
+from conftest import insert_listing, insert_ref, run_pipeline
+from src.schema import SCHEMA
 
 
 @pytest.fixture
@@ -40,18 +25,13 @@ def live_server(tmp_path, monkeypatch):
     db_path = tmp_path / "ledger.sqlite"
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA)
-    conn.execute(
-        "INSERT INTO references_meta VALUES (?,?,?,?,?,?,?,?)",
-        ("rolex-submariner-126610ln", "Rolex", "126610LN", "Submariner",
-         "Steel", "https://example.com/ref", "https://example.com/src",
-         1700000000))
+    insert_ref(conn, slug="rolex-submariner-126610ln", ref="126610LN",
+               model="Submariner")
     for i in range(8):
-        conn.execute(
-            "INSERT INTO listings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (f"l{i}", "rolex-submariner-126610ln", f"Listing {i}",
-             10000 + i * 500, "USD", "Excellent", "full_set", "Steel",
-             41, None, 2024, "dealer", "Dealer A", 1, None, None, None,
-             1, "https://example.com/src", 1700000000))
+        insert_listing(conn, f"l{i}", "rolex-submariner-126610ln",
+                       f"Listing {i}", 10000 + i * 500, f"Dealer {i}")
+    run_pipeline(conn, slug="rolex-submariner-126610ln", ref="126610LN",
+                 model="Submariner")
     conn.commit()
     conn.close()
 
@@ -70,6 +50,12 @@ def get(base, path):
     return urllib.request.urlopen(base + path)
 
 
+def post(base, path, data):
+    body = urllib.parse.urlencode(data).encode()
+    req = urllib.request.Request(base + path, data=body)
+    return urllib.request.urlopen(req)
+
+
 def get_status(base, path):
     try:
         with get(base, path) as resp:
@@ -82,6 +68,7 @@ def test_security_headers_present(live_server):
     with get(live_server, "/") as resp:
         headers = dict(resp.headers)
     assert headers.get("Content-Security-Policy", "").startswith("default-src 'self'")
+    assert "upgrade-insecure-requests" not in headers.get("Content-Security-Policy", "")
     assert headers["X-Content-Type-Options"] == "nosniff"
     assert headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
     assert headers["X-Frame-Options"] == "DENY"
@@ -146,8 +133,84 @@ def test_static_js_served(live_server):
 
 
 def test_api_returns_valid_json(live_server):
-    import json as jsonlib
-    with get(live_server, "/api/reference/rolex-submariner-126610ln") as resp:
+    with get(live_server, "/api/reference/rolex-submariner-126610ln.json") as resp:
         data = jsonlib.load(resp)
     assert data["n_exact"] == 8
-    assert data["limited"] is False
+    assert data["valid"] is True
+    assert data["confidence_state"] == "High"
+
+
+def test_api_requires_existing_slug(live_server):
+    assert get_status(live_server, "/api/reference/no-such-ref.json") == 404
+
+
+def test_sources_page_renders(live_server):
+    with get(live_server, "/sources") as resp:
+        body = resp.read().decode("utf-8")
+    assert "Data sources" in body
+    assert "mostexpensivewatches.net" in body
+
+
+def test_track_endpoint_requires_email_and_slug(live_server):
+    status = get_status(live_server, "/api/track")
+    assert status == 405
+
+
+def test_track_endpoint_persists_watchlist(live_server, tmp_path, monkeypatch):
+    db_path = tmp_path / "watch.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(SCHEMA)
+    insert_ref(conn, slug="rolex-submariner-126610ln", ref="126610LN",
+               model="Submariner")
+    insert_listing(conn, "l0", "rolex-submariner-126610ln", "Listing 0",
+                   10000, "Dealer 0")
+    run_pipeline(conn, slug="rolex-submariner-126610ln", ref="126610LN",
+                 model="Submariner")
+    conn.commit()
+
+    monkeypatch.setattr(server_mod, "DB_PATH", str(db_path))
+    monkeypatch.setattr(config, "DB_PATH", str(db_path))
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), server_mod.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{httpd.server_port}"
+
+    resp = post(base, "/api/track",
+                {"action": "track", "email": "buyer@example.com",
+                 "slug": "rolex-submariner-126610ln"})
+    assert resp.status == 200
+    data = jsonlib.load(resp)
+    assert data["ok"] is True
+
+    conn2 = sqlite3.connect(db_path)
+    users = conn2.execute("SELECT email FROM watch_users").fetchall()
+    items = conn2.execute("SELECT reference_slug FROM watchlist_item").fetchall()
+    conn2.close()
+    assert users == [("buyer@example.com",)]
+    assert items == [("rolex-submariner-126610ln",)]
+    httpd.shutdown()
+
+
+def test_unsubscribe_endpoint_deactivates(live_server):
+    import sqlite3 as _sq
+    db_path = server_mod.DB_PATH
+    conn = _sq.connect(db_path)
+    conn.execute("INSERT INTO watch_users (id, email, unsubscribe_token, "
+                 "created_at) VALUES ('u@x.com','u@x.com','tok123',1)")
+    conn.execute("INSERT INTO watchlist_item (id, user_id, reference_slug, "
+                 "created_at, active) VALUES ('w1','u@x.com','slug-x',1,1)")
+    conn.commit()
+    conn.close()
+
+    with get(live_server, "/unsubscribe?token=tok123") as resp:
+        body = resp.read().decode("utf-8")
+    assert "You are unsubscribed" in body
+
+    conn = _sq.connect(db_path)
+    items = conn.execute("SELECT COUNT(*) FROM watchlist_item").fetchone()[0]
+    conn.close()
+    assert items == 0
+
+
+def test_bad_unsubscribe_token_returns_404(live_server):
+    assert get_status(live_server, "/unsubscribe?token=nope") == 404

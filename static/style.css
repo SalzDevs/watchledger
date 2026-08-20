@@ -454,3 +454,48 @@ footer { border-top: 1px solid var(--border); background: var(--bg); margin-top:
 section.step-section { padding-top: 24px; }
 .panel-limited p { font-size: 14px; color: var(--muted); margin: 0; line-height: 1.6; }
 body.drawer-open { overflow: hidden; }
+
+/* --- Phase 4: eligibility state badges (homepage cards) --- */
+.state-badge {
+  display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .05em;
+  text-transform: uppercase; padding: 3px 10px; border-radius: 999px;
+  margin: 8px 0 2px; border: 1px solid transparent;
+}
+.state-ok { background: var(--green-soft); color: var(--green); border-color: var(--green); }
+.state-warn { background: var(--amber-soft); color: var(--amber); border-color: var(--amber); }
+.state-empty { background: var(--bg); color: var(--muted); border-color: var(--border); }
+
+/* --- Phase 4: eligibility gates checklist --- */
+.gate-details { margin-top: 12px; }
+.gate {
+  display: flex; gap: 8px; align-items: center; font-size: 13px;
+  padding: 5px 0; color: var(--muted);
+}
+.gate .gate-mark { font-weight: 700; width: 16px; }
+.gate.ok .gate-mark { color: var(--green); }
+.gate.fail .gate-mark { color: var(--red); }
+.gate.fail { color: var(--ink); }
+
+/* --- Phase 9: track box --- */
+.track-box {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-card); padding: 24px 28px; margin-top: 20px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 24px; flex-wrap: wrap;
+}
+.track-box h3 { font-size: 18px; margin: 0 0 4px; }
+.track-sub { font-size: 13px; color: var(--muted); margin: 0; }
+.track-field { display: flex; gap: 10px; }
+.track-field input {
+  font: inherit; font-size: 14px; padding: 10px 14px; border: 1px solid var(--border);
+  border-radius: var(--r-btn); min-width: 240px; background: var(--bg);
+}
+.track-note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+.track-done { font-size: 15px; font-weight: 600; color: var(--green); }
+
+/* --- drawer match provenance --- */
+.drawer-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.drawer-section h3 {
+  font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); margin: 0 0 10px;
+}

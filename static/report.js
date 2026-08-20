@@ -61,6 +61,25 @@
     return allowed.has(kind) ? kind : "not_comp";
   }
 
+  function matchLabel(level) {
+    return {
+      exact_configuration: "Exact configuration",
+      exact_reference_variant: "Variant configuration",
+      related_reference: "Related reference",
+      rejected: "Rejected (parts/accessories)",
+      unverified: "Unverified",
+    }[level] || level || "—";
+  }
+
+  function agoText(ts) {
+    if (!ts) return "—";
+    const d = Date.now() / 1000 - ts;
+    if (d < 60) return "just now";
+    if (d < 3600) return `${Math.floor(d / 60)} min ago`;
+    if (d < 86400) return `${Math.floor(d / 3600)} h ago`;
+    return `${Math.floor(d / 86400)} d ago`;
+  }
+
   function buildDrawer(listing) {
     drawerBody.replaceChildren();
 
@@ -86,6 +105,18 @@
     );
     drawerBody.appendChild(badge);
 
+    // --- match provenance (Phase 2) ---
+    const provenance = element("section", "drawer-section");
+    provenance.appendChild(element("h3", "", "Match provenance"));
+    const ptable = element("table", "kv");
+    addDetailRow(ptable, "Match level", matchLabel(listing.match_level));
+    addDetailRow(ptable, "Match reason", listing.match_reason || "—");
+    addDetailRow(ptable, "Source", listing.source_name || "—");
+    addDetailRow(ptable, "Source listing id", listing.source_listing_id || "—");
+    addDetailRow(ptable, "Observed", agoText(listing.fetched_at));
+    provenance.appendChild(ptable);
+    drawerBody.appendChild(provenance);
+
     const explanation = element("section", `drawer-section tint-${kind}`);
     explanation.appendChild(element("h3", "", "Why this stands out"));
 
@@ -96,6 +127,8 @@
       explanationText = `This listing is within the observed comparable range of ${listing.range || "this reference"}.`;
     } else if (kind === "above" || kind === "over") {
       explanationText = `This listing is above the observed comparable range of ${listing.range || "this reference"}.`;
+    } else if (listing.match_level === "rejected") {
+      explanationText = "This listing was excluded from market math because its title indicates parts or accessories, not a complete watch.";
     }
 
     explanation.appendChild(element("p", "", explanationText));
@@ -108,6 +141,8 @@
     addDetailRow(table, "Year", listing.year ? String(listing.year) : "");
     addDetailRow(table, "Box & papers", listing.box_papers);
     addDetailRow(table, "Material", listing.material);
+    addDetailRow(table, "Size", listing.size_mm ? `${listing.size_mm} mm` : "");
+    addDetailRow(table, "Movement", listing.movement);
     addDetailRow(table, "Seller", listing.merchant);
     details.appendChild(table);
     drawerBody.appendChild(details);
@@ -190,46 +225,117 @@
     }
   });
 
-  // --- tabs: exact / related ---
+  // --- tabs: exact / variant / related / excluded ---
   const tabButtons = document.querySelectorAll("#ltabs .tab");
+  const tabTables = {
+    exact: document.getElementById("tbl-exact"),
+    variant: document.getElementById("tbl-variant"),
+    related: document.getElementById("tbl-related"),
+    excluded: document.getElementById("tbl-excluded"),
+  };
   if (tabButtons.length) {
     tabButtons.forEach((tab) => {
       tab.addEventListener("click", () => {
         tabButtons.forEach((x) => x.classList.remove("active"));
         tab.classList.add("active");
         const which = tab.dataset.tab;
-        document.getElementById("tbl-exact").classList.toggle("hidden", which !== "exact");
-        document.getElementById("tbl-related").classList.toggle("hidden", which !== "related");
+        Object.entries(tabTables).forEach(([name, table]) => {
+          if (table) table.classList.toggle("hidden", name !== which);
+        });
       });
     });
   }
 
   // --- filters + sort, operating on the DOM rows (data-listing-id only) ---
-  const rows = [...document.querySelectorAll("#tbl-exact .lrow")].map((row) => ({
-    row,
-    data: listings[row.dataset.listingId] || {},
-  }));
+  const tables = ["tbl-exact", "tbl-variant", "tbl-related", "tbl-excluded"];
+  const rowIndex = {};
+  for (const tid of tables) {
+    const table = document.getElementById(tid);
+    if (!table) continue;
+    for (const row of table.querySelectorAll(".lrow")) {
+      rowIndex[row.dataset.listingId] = { row, table: tid, data: listings[row.dataset.listingId] || {} };
+    }
+  }
 
   function applyFilters() {
     const cond = document.querySelector("[data-filter=condition]").value;
     const bp = document.querySelector("[data-filter=bp]").value;
     const avail = document.querySelector("[data-filter=avail]").value;
+    const merchant = document.querySelector("[data-filter=merchant]").value;
     const sort = document.getElementById("fsort").value;
 
-    let visible = rows.filter((o) => o.data.kind !== "not_comp");
-    visible = visible.filter((o) => !cond || (o.data.condition || "") === cond);
-    visible = visible.filter((o) => !bp || (o.data.box_papers || "") === bp);
-    visible = visible.filter((o) => avail === "" || (avail === "1" ? o.data.price != null : true));
+    for (const tid of tables) {
+      const table = document.getElementById(tid);
+      if (!table) continue;
+      const entries = Object.values(rowIndex).filter((o) => o.table === tid);
+      let visible = entries.filter((o) => !cond || (o.data.condition || "") === cond);
+      visible = visible.filter((o) => !bp || (o.data.box_papers || "") === bp);
+      visible = visible.filter((o) => avail === "" || (String(avail) === "1" ? !!o.data.price : !o.data.available));
+      visible = visible.filter((o) => !merchant || (o.data.merchant || "") === merchant);
 
-    const order = { best: ["deal", "fair", "above", "over", "not_comp"], low: [], high: [] };
-    if (sort === "low") visible.sort((a, b) => (a.data.price ?? 1e18) - (b.data.price ?? 1e18));
-    else if (sort === "high") visible.sort((a, b) => (b.data.price ?? -1) - (a.data.price ?? -1));
-    else visible.sort((a, b) => order.best.indexOf(a.data.kind) - order.best.indexOf(b.data.kind));
+      if (sort === "low") visible.sort((a, b) => (a.data.price ?? 1e18) - (b.data.price ?? 1e18));
+      else if (sort === "high") visible.sort((a, b) => (b.data.price ?? -1) - (a.data.price ?? -1));
+      else if (sort === "typical") {
+        visible.sort((a, b) => {
+          const ad = a.data.kind === "deal" || a.data.kind === "fair" ? 0 : 1;
+          const bd = b.data.kind === "deal" || b.data.kind === "fair" ? 0 : 1;
+          return ad - bd || (a.data.price ?? 1e18) - (b.data.price ?? 1e18);
+        });
+      } else if (sort === "recent") {
+        visible.sort((a, b) => (b.data.fetched_at ?? 0) - (a.data.fetched_at ?? 0));
+      } else if (sort === "newest") {
+        visible.sort((a, b) => (b.data.year ?? 0) - (a.data.year ?? 0));
+      } else {
+        const order = ["deal", "fair", "above", "over", "not_comp"];
+        visible.sort((a, b) => order.indexOf(a.data.kind) - order.indexOf(b.data.kind));
+      }
 
-    const body = document.querySelector("#tbl-exact tbody");
-    body.replaceChildren(...visible.map((o) => o.row));
+      table.querySelector("tbody").replaceChildren(...visible.map((o) => o.row));
+    }
+  }
+
+  // populate the seller filter from the exact table rows
+  const merchantSelect = document.querySelector("[data-filter=merchant]");
+  if (merchantSelect) {
+    const merchants = new Set();
+    for (const o of Object.values(rowIndex)) {
+      if (o.data.merchant) merchants.add(o.data.merchant);
+    }
+    for (const m of [...merchants].sort()) {
+      const opt = document.createElement("option");
+      opt.value = m;
+      opt.textContent = m;
+      merchantSelect.appendChild(opt);
+    }
   }
 
   const filterSelects = document.querySelectorAll("#lfilters select");
   filterSelects.forEach((select) => select.addEventListener("change", applyFilters));
+
+  // --- tracking form (Phase 9) ---
+  const trackForm = document.getElementById("track-form");
+  if (trackForm) {
+    trackForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const email = trackForm.querySelector('input[name=email]').value;
+      const slug = trackForm.dataset.slug;
+      const body = new URLSearchParams({ action: "track", email, slug });
+      fetch("/api/track", { method: "POST", body })
+        .then((res) => {
+          if (!res.ok) throw new Error("tracking failed");
+          return res.json();
+        })
+        .then((data) => {
+          if (data && data.ok) {
+            trackForm.hidden = true;
+            const done = document.getElementById("track-done");
+            if (done) done.hidden = false;
+          }
+        })
+        .catch(() => {
+          const note = trackForm.querySelector(".track-note");
+          if (note) note.textContent = "Something went wrong. Please try again.";
+        });
+    });
+  }
 })();
