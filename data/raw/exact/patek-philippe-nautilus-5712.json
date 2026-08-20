@@ -1,25 +1,9 @@
 {
- "source_url": "https://mostexpensivewatches.net/api/references/patek-philippe-nautilus-5712",
- "fetched_at": 1787217332.927202,
+ "source_url": "https://mostexpensivewatches.net/api/listings/search?q=5712",
+ "fetched_at": 1787217333.327648,
  "payload": {
-  "reference": {
-   "slug": "patek-philippe-nautilus-5712",
-   "brand": "Patek Philippe",
-   "ref": "5712",
-   "model": "Nautilus Moon Phase",
-   "case_material": "Stainless Steel",
-   "url": "https://mostexpensivewatches.net/reference/patek-philippe-nautilus-5712",
-   "description": "The Patek Philippe Nautilus 5712/1A-001 in stainless steel was introduced in 2006 to commemorate the 30th anniversary of the Nautilus collection and remains in current production. Collectors prioritize this reference for its ultra-thin 8.52mm case profile and the caliber 240 PS IRM C LU, an automatic movement featuring a 22k gold micro-rotor. The asymmetrical dial layout includes a power reserve indicator, moon phase, and pointer date, set against a blue-grey gradient finish with horizontal embossing. Unlike the standard 5711, the 5712 features a four-part case construction and a sapphire crystal caseback. On the secondary market, prices typically range from $90,000 to $120,000 depending on condition and provenance. A notable production variant is the \"Geneva Seal\" version produced between 2006 and mid-2009, which preceded the transition to the proprietary Patek Philippe Seal found on modern examples."
-  },
-  "listing_stats": {
-   "count": 8,
-   "median": 65675.0,
-   "low": 19500.0,
-   "high": 295000.0,
-   "brands": 1,
-   "merchants": 4
-  },
-  "listings": [
+  "total": 6,
+  "items": [
    {
     "id": "h_7739651948753",
     "title": "Patek Philippe Patek Philippe Nautilus 5712/1R-001",
@@ -62,54 +46,6 @@
     "image_url": "https://cdn.shopify.com/s/files/1/0561/5190/0369/files/Patek_Philippe_Nautilus_5712A-001.jpg?v=1786133226",
     "detail_url": "https://mostexpensivewatches.net/listing/h_7787875336401",
     "buy_url": "https://mostexpensivewatches.net/out/h_7787875336401",
-    "available": true
-   },
-   {
-    "id": "h_7516691431511",
-    "title": "Patek Philippe Patek Philippe Annual Calendar Moonphase",
-    "brand": "Patek Philippe",
-    "model": "Patek Philippe Annual Calendar Moonphase",
-    "reference": "\u2014",
-    "price_usd": 57500.0,
-    "currency": "USD",
-    "condition": "excellent",
-    "box_papers": "full_set",
-    "year": null,
-    "case_material": "Stainless Steel",
-    "case_size_mm": 40.0,
-    "movement": "Automatic",
-    "complications": [
-     "Perpetual Calendar",
-     "Annual Calendar",
-     "Moon Phase"
-    ],
-    "merchant_slug": "analog-shift",
-    "merchant_name": "Analog/Shift",
-    "image_url": "https://cdn.shopify.com/s/files/1/0809/1255/files/AS11404_40930858_PATEKPHILIPPE_ANNUALCALENDARWGBLUEDIAL_5205G-013--6.jpg?v=1763910931",
-    "detail_url": "https://mostexpensivewatches.net/listing/h_7516691431511",
-    "buy_url": "https://mostexpensivewatches.net/out/h_7516691431511",
-    "available": true
-   },
-   {
-    "id": "h_7519270076503",
-    "title": "Patek Philippe Patek Philippe Calatrava",
-    "brand": "Patek Philippe",
-    "model": "Patek Philippe Calatrava",
-    "reference": "\u2014",
-    "price_usd": 23950.0,
-    "currency": "USD",
-    "condition": "excellent",
-    "box_papers": "full_set",
-    "year": null,
-    "case_material": "Stainless Steel",
-    "case_size_mm": 40.0,
-    "movement": "Automatic",
-    "complications": [],
-    "merchant_slug": "analog-shift",
-    "merchant_name": "Analog/Shift",
-    "image_url": "https://cdn.shopify.com/s/files/1/0809/1255/files/AS11146_40930781_PATEKPHILIPPE_CALATRAVARG_5196R-001-5.jpg?v=1767703666",
-    "detail_url": "https://mostexpensivewatches.net/listing/h_7519270076503",
-    "buy_url": "https://mostexpensivewatches.net/out/h_7519270076503",
     "available": true
    },
    {
@@ -203,22 +139,6 @@
     "detail_url": "https://mostexpensivewatches.net/listing/h_7641404276962",
     "buy_url": "https://mostexpensivewatches.net/out/h_7641404276962",
     "available": false
-   }
-  ],
-  "auction_lots": [
-   {
-    "slug": "patek-philippe-5712-1a-001-2023",
-    "brand": "Patek Philippe",
-    "reference": "5712/1A-001",
-    "model": "Nautilus",
-    "case_material": "Stainless Steel",
-    "hammer_usd": 97000,
-    "year_sold": 2023,
-    "venue": "Bonhams London",
-    "lot_summary": "A modern stainless steel Nautilus featuring a moon phase and power reserve indicator, representing the enduring popularity of Gerald Genta's iconic porthole design.",
-    "source_url": "https://www.bonhams.com/auctions/28011/lot/102/",
-    "provenance": "ai_generated_grounded",
-    "url": "https://mostexpensivewatches.net/auctions/patek-philippe-5712-1a-001-2023"
    }
   ]
  }

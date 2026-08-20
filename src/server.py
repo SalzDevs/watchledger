@@ -134,7 +134,8 @@ def render_home(stats):
   <div class="market-name">{html.escape(s['brand'])} {html.escape(s['model'])}</div>
   <div class="market-ref">Ref {html.escape(s['ref'])}</div>
   <div class="market-range">{rng}</div>
-  <div class="market-meta"><span class="dot"></span>{s['n_listings']} active listings · {fmt_ago(s['updated'])}</div>
+  <div class="market-meta"><span class="dot"></span>{s['n_listings']} exact listings · {fmt_ago(s['updated'])}</div>
+  <div class="market-sub">{s['confidence']} confidence · snapshot data</div>
  </div><span class="market-arrow">→</span></a>""")
     market_cards = "".join(market_cards)
 
@@ -163,7 +164,7 @@ def render_home(stats):
   <div class="hc-ref">Ref {html.escape(hero['ref'])}</div>
   <div class="hc-range">{hrange}</div>
   <div class="hc-label">Observed asking-price range</div>
-  <div class="hc-meta">{hero['n_listings']} active listings · {fmt_ago(hero['updated'])}</div>
+  <div class="hc-meta"><span class="dot"></span>{hero['n_listings']} exact active listings · {fmt_ago(hero['updated'])}</div>
  </div>
 </div>"""
 
@@ -184,10 +185,19 @@ def render_home(stats):
     <input id="q" type="text" placeholder="Search brand, model, or reference number" autocomplete="off">
    </div>
    <div class="suggestions" id="suggestions"></div>
-   <p class="search-hint">Try <code>Rolex 126610LN</code> or <code>Patek Philippe 5711</code></p>
+   <div class="search-chips"><span class="chip-label">Popular searches</span>
+    <button class="chip" data-q="Rolex 126610LN">Rolex 126610LN</button>
+    <button class="chip" data-q="Patek Philippe 5711">Patek 5711</button>
+    <button class="chip" data-q="Tudor Black Bay 58">Tudor BB58</button></div>
   </div>
  </div>
  {hero_block}
+</section>
+
+<section class="trust-strip">
+ <span>Live dealer listings</span><span class="ts-dot">·</span>
+ <span>Reference-level comparison</span><span class="ts-dot">·</span>
+ <span>Transparent market ranges</span>
 </section>
 
 <section class="sec-head" id="how" style="padding-bottom:0">
@@ -197,20 +207,20 @@ def render_home(stats):
 <section style="padding-top:24px"><div class="steps">
  <div class="step"><div class="num">01</div><h3>We collect visible market listings</h3>
   <p>Dealer asking prices are pulled from free public sources and stored exactly as returned — with the source URL and fetch time.</p>
-  <div class="step-visual">Live listings · N sources</div></div>
+  <div class="step-visual sv-collect"><span class="mini-card"></span><span class="mini-card"></span><span class="mini-card"></span><span class="sv-arrow">→</span><span class="mini-tray"></span></div></div>
  <div class="step"><div class="num">02</div><h3>We compare like-for-like watches</h3>
   <p>Listings for the same reference are grouped and compared by price, condition, and completeness.</p>
-  <div class="step-visual">Same reference · one comparison</div></div>
+  <div class="step-visual sv-compare"><span class="mini-ref">126610LN</span><span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span></div></div>
  <div class="step"><div class="num">03</div><h3>You see where each price sits</h3>
   <p>The result is a price range, a typical price, and each listing's position — every number traceable to its source.</p>
-  <div class="step-visual">Market range · per listing position</div></div>
+  <div class="step-visual sv-range"><span class="sv-track"><span class="sv-band"></span><span class="sv-marker"></span></span><span class="sv-dots"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div></div>
 </div></section>
 
 <section id="markets">
  <div class="sec-head">
   <div><p class="eyebrow">LIVE MARKET DATA</p>
   <h2>Markets people are watching</h2></div>
-  <a class="sec-link" href="/api/references.json">JSON API →</a>
+  <a class="sec-link" href="/api/references.json">Explore all markets →</a>
  </div>
  <div class="market-grid">{market_cards}</div>
 </section>
@@ -253,6 +263,18 @@ function open() {{
 input.addEventListener('input', open);
 input.addEventListener('focus', open);
 document.addEventListener('click', e => {{ if (!box.contains(e.target)) box.classList.remove('open'); }});
+document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => {{
+  input.value = c.dataset.q;
+  open();
+  const first = box.querySelector('.sug-row');
+  if (first) window.location = first.getAttribute('href');
+}}));
+input.addEventListener('keydown', e => {{
+  if (e.key === 'Enter') {{
+    const first = box.querySelector('.sug-row');
+    if (first) window.location = first.getAttribute('href');
+  }}
+}});
 </script>""" + PAGE_FOOT
 
 

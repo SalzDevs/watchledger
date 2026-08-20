@@ -32,6 +32,7 @@ def connect():
         case_size_mm REAL, movement TEXT, year INTEGER,
         merchant_slug TEXT, merchant_name TEXT, available INTEGER,
         image_url TEXT, detail_url TEXT, buy_url TEXT,
+        exact INTEGER DEFAULT 0,
         source_url TEXT, fetched_at REAL
     );
     CREATE TABLE IF NOT EXISTS auction_lots (
@@ -42,6 +43,7 @@ def connect():
         source_url TEXT, fetched_at REAL
     );
     CREATE INDEX IF NOT EXISTS idx_listings_slug ON listings(slug);
+    CREATE INDEX IF NOT EXISTS idx_listings_exact ON listings(slug, exact);
     CREATE INDEX IF NOT EXISTS idx_auctions_ref ON auction_lots(brand, reference);
     """)
     return db
@@ -87,7 +89,7 @@ def main():
         slug = fname[:-5]
         for l in payload.get("listings") or []:
             cur.execute(
-                "INSERT OR REPLACE INTO listings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO listings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (l.get("id"), slug, l.get("title"), l.get("price_usd"),
                  l.get("currency"), l.get("condition"), l.get("box_papers"),
                  l.get("case_material"), l.get("case_size_mm"),
@@ -95,8 +97,25 @@ def main():
                  l.get("merchant_name"),
                  1 if l.get("available") else 0,
                  l.get("image_url"), l.get("detail_url"), l.get("buy_url"),
-                 src, ts))
+                 0, src, ts))
             n_list += 1
+
+        # exact-match listings from the search endpoint -> exact=1.
+        # These replace the broad per-reference sample as the market baseline.
+        exact = load_raw("exact", fname[:-5])
+        if exact:
+            for l in (exact.get("payload") or {}).get("items") or []:
+                cur.execute(
+                    "INSERT OR REPLACE INTO listings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (l.get("id"), slug, l.get("title"), l.get("price_usd"),
+                     l.get("currency"), l.get("condition"), l.get("box_papers"),
+                     l.get("case_material"), l.get("case_size_mm"),
+                     l.get("movement"), l.get("year"), l.get("merchant_slug"),
+                     l.get("merchant_name"),
+                     1 if l.get("available") else 0,
+                     l.get("image_url"), l.get("detail_url"), l.get("buy_url"),
+                     1, exact.get("source_url"), exact.get("fetched_at")))
+                n_list += 1
         for a in payload.get("auction_lots") or []:
             cur.execute(
                 "INSERT OR REPLACE INTO auction_lots VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",

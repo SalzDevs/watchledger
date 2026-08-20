@@ -1,25 +1,9 @@
 {
- "source_url": "https://mostexpensivewatches.net/api/references/rolex-explorer-ii-226570-polar",
- "fetched_at": 1787217329.712985,
+ "source_url": "https://mostexpensivewatches.net/api/listings/search?q=226570",
+ "fetched_at": 1787217330.128413,
  "payload": {
-  "reference": {
-   "slug": "rolex-explorer-ii-226570-polar",
-   "brand": "Rolex",
-   "ref": "226570",
-   "model": "Explorer II Polar",
-   "case_material": "Stainless Steel",
-   "url": "https://mostexpensivewatches.net/reference/rolex-explorer-ii-226570-polar",
-   "description": "The Rolex Explorer II reference 226570 was introduced in 2021 to mark the 50th anniversary of the model line and remains in current production. Collectors prioritize this reference for its caliber 3285 movement, which features a Chronergy escapement and a 70-hour power reserve. The \"Polar\" variant is distinguished by its white lacquer dial, black-outlined hands, and indices coated in bright blue Chromalight luminescence. The 42mm Oystersteel case retains the brushed fixed bezel with a 24-hour scale, though this generation features thinned lugs and a widened bracelet for improved proportions compared to its predecessor, the 216570. On the secondary market, prices typically range from $10,500 to $13,000 depending on condition and provenance. A notable production detail is the return to a matte black finish on the base of the hands, correcting the \"phantom\" floating effect seen on previous iterations."
-  },
-  "listing_stats": {
-   "count": 42,
-   "median": 11000.0,
-   "low": 7200.0,
-   "high": 13800.0,
-   "brands": 1,
-   "merchants": 5
-  },
-  "listings": [
+  "total": 27,
+  "items": [
    {
     "id": "h_6851990683723",
     "title": "Rolex Rolex Explorer II 226570",
@@ -40,28 +24,6 @@
     "image_url": "https://cdn.shopify.com/s/files/1/0146/0732/products/Rolex-Explorer-II-226570-10-10-ROL-13MDEY-8abf06733ad0_31e8b7fb-824c-4063-a31e-d0223723dcd4.jpg?v=1697117711",
     "detail_url": "https://mostexpensivewatches.net/listing/h_6851990683723",
     "buy_url": "https://mostexpensivewatches.net/out/h_6851990683723",
-    "available": false
-   },
-   {
-    "id": "h_7368975384685",
-    "title": "Rolex *Unpolished* 1987 Rolex Explorer II (Ref. 16550) Polar Dial",
-    "brand": "Rolex",
-    "model": "*Unpolished* 1987 Rolex Explorer II (Ref. 16550) Polar Dial",
-    "reference": "16550",
-    "price_usd": 13500.0,
-    "currency": "USD",
-    "condition": "excellent",
-    "box_papers": "full_set",
-    "year": null,
-    "case_material": "Stainless Steel",
-    "case_size_mm": 42.0,
-    "movement": "Automatic",
-    "complications": [],
-    "merchant_slug": "craft-and-tailored",
-    "merchant_name": "Craft + Tailored",
-    "image_url": "https://cdn.shopify.com/s/files/1/1104/9180/files/Img027133.jpg?v=1714605196",
-    "detail_url": "https://mostexpensivewatches.net/listing/h_7368975384685",
-    "buy_url": "https://mostexpensivewatches.net/out/h_7368975384685",
     "available": false
    },
    {
@@ -260,28 +222,6 @@
     "image_url": "https://cdn.shopify.com/s/files/1/0146/0732/files/Rolex-Explorer-II-226570-10-21-ROL-MSQACT-1f712ebd7b06.jpg?v=1715370340",
     "detail_url": "https://mostexpensivewatches.net/listing/h_6971135918155",
     "buy_url": "https://mostexpensivewatches.net/out/h_6971135918155",
-    "available": false
-   },
-   {
-    "id": "h_8143825371245",
-    "title": "Rolex *Unpolished* 1991 Rolex Explorer II (Ref. 16570) Polar \"Chi Chi\" Dial",
-    "brand": "Rolex",
-    "model": "*Unpolished* 1991 Rolex Explorer II (Ref. 16570) Polar \"Chi Chi\" Dial",
-    "reference": "16570",
-    "price_usd": 12000.0,
-    "currency": "USD",
-    "condition": "excellent",
-    "box_papers": "full_set",
-    "year": null,
-    "case_material": "Stainless Steel",
-    "case_size_mm": 42.0,
-    "movement": "Automatic",
-    "complications": [],
-    "merchant_slug": "craft-and-tailored",
-    "merchant_name": "Craft + Tailored",
-    "image_url": "https://cdn.shopify.com/s/files/1/1104/9180/files/Img044661.jpg?v=1783105766",
-    "detail_url": "https://mostexpensivewatches.net/listing/h_8143825371245",
-    "buy_url": "https://mostexpensivewatches.net/out/h_8143825371245",
     "available": false
    },
    {
@@ -503,52 +443,7 @@
     "detail_url": "https://mostexpensivewatches.net/listing/h_6867790200907",
     "buy_url": "https://mostexpensivewatches.net/out/h_6867790200907",
     "available": false
-   },
-   {
-    "id": "h_6858871078987",
-    "title": "Rolex Rolex Explorer II 226570",
-    "brand": "Rolex",
-    "model": "Rolex Explorer II 226570",
-    "reference": "226570",
-    "price_usd": 11000.0,
-    "currency": "USD",
-    "condition": "excellent",
-    "box_papers": "full_set",
-    "year": null,
-    "case_material": "Stainless Steel",
-    "case_size_mm": 40.0,
-    "movement": "Automatic",
-    "complications": [],
-    "merchant_slug": "hodinkee",
-    "merchant_name": "Hodinkee Shop",
-    "image_url": "https://cdn.shopify.com/s/files/1/0146/0732/products/Rolex-Explorer-II-226570-10-10-ROL-A4PVYX-0ae8d2a2e56a_75cecad9-893e-4b64-9507-056e5981202f.jpg?v=1703109045",
-    "detail_url": "https://mostexpensivewatches.net/listing/h_6858871078987",
-    "buy_url": "https://mostexpensivewatches.net/out/h_6858871078987",
-    "available": false
-   },
-   {
-    "id": "h_6854226640971",
-    "title": "Rolex Rolex Explorer II 226570",
-    "brand": "Rolex",
-    "model": "Rolex Explorer II 226570",
-    "reference": "226570",
-    "price_usd": 11000.0,
-    "currency": "USD",
-    "condition": "excellent",
-    "box_papers": "full_set",
-    "year": null,
-    "case_material": "Stainless Steel",
-    "case_size_mm": 40.0,
-    "movement": "Automatic",
-    "complications": [],
-    "merchant_slug": "hodinkee",
-    "merchant_name": "Hodinkee Shop",
-    "image_url": "https://cdn.shopify.com/s/files/1/0146/0732/products/Rolex-Explorer-II-226570-10-10-ROL-MX6ADC-ab0f190142ae.jpg?v=1702215223",
-    "detail_url": "https://mostexpensivewatches.net/listing/h_6854226640971",
-    "buy_url": "https://mostexpensivewatches.net/out/h_6854226640971",
-    "available": false
    }
-  ],
-  "auction_lots": []
+  ]
  }
 }

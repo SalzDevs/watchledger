@@ -1,25 +1,9 @@
 {
- "source_url": "https://mostexpensivewatches.net/api/references/audemars-piguet-royal-oak-15202",
- "fetched_at": 1787217334.5333061,
+ "source_url": "https://mostexpensivewatches.net/api/listings/search?q=15202ST",
+ "fetched_at": 1787217334.908361,
  "payload": {
-  "reference": {
-   "slug": "audemars-piguet-royal-oak-15202",
-   "brand": "Audemars Piguet",
-   "ref": "15202ST",
-   "model": "Royal Oak Jumbo (discontinued)",
-   "case_material": "Stainless Steel",
-   "url": "https://mostexpensivewatches.net/reference/audemars-piguet-royal-oak-15202",
-   "description": "The Audemars Piguet Royal Oak Jumbo reference 15202ST was produced from 2000 until its discontinuation in 2021. Collectors prioritize this reference for its 39mm case diameter and 8.1mm thickness, which closely mirrors the proportions of the original 1972 model. It features the self-winding Calibre 2121, a movement notable for its 3.05mm height and historical lineage. In 2012, the design transitioned to the \"40th Anniversary\" layout, moving the AP logo from the twelve o'clock position to six o'clock and introducing the \"Petite Tapisserie\" dial pattern. On the secondary market, prices typically range from $65,000 to $110,000 depending on the production year and condition. A notable variant is the 15202ST.OO.1240ST.01, which remains highly sought after for its blue dial and anniversary specifications. Early \"D-Series\" examples from the early 2000s often command premiums due to their transitional dial configurations and lower production numbers."
-  },
-  "listing_stats": {
-   "count": 5,
-   "median": 45000.0,
-   "low": 42500.0,
-   "high": 60000.0,
-   "brands": 1,
-   "merchants": 4
-  },
-  "listings": [
+  "total": 5,
+  "items": [
    {
     "id": "h_7773790011601",
     "title": "Audemars Piguet Audemars Piguet Royal Oak 15202ST.OO.0944ST.01",
@@ -129,20 +113,6 @@
     "detail_url": "https://mostexpensivewatches.net/listing/h_6963427246163",
     "buy_url": "https://mostexpensivewatches.net/out/h_6963427246163",
     "available": false
-   }
-  ],
-  "auction_lots": [
-   {
-    "slug": "ap-royal-oak-jumbo-15202st-final",
-    "brand": "Audemars Piguet",
-    "reference": "15202ST.OO.1240ST.01",
-    "model": "Royal Oak Jumbo 15202ST (final 50th anniversary)",
-    "case_material": "Stainless Steel",
-    "hammer_usd": 280000,
-    "year_sold": 2022,
-    "venue": "Phillips Geneva",
-    "lot_summary": "Final-production 15202 (50th-anniversary 'tribute' dial, end of the 15202 reference). The 16202 successor began the same year.",
-    "url": "https://mostexpensivewatches.net/auctions/ap-royal-oak-jumbo-15202st-final"
    }
   ]
  }

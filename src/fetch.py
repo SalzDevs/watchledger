@@ -77,6 +77,25 @@ def fetch_all():
         print(f"  + {key} -> {slug} (listings: {stats.get('count', 0)}, "
               f"auction lots: {len(detail.get('auction_lots') or [])})", flush=True)
 
+        # Exact-reference listings via the listing search endpoint.
+        # The per-reference payload mixes in related/vintage listings; the
+        # search endpoint returns genuine exact matches for the reference.
+        ref_query = matches[0].get("ref") or ref
+        try:
+            hit = http_get(f"{MEW_BASE}/api/listings/search?q={urllib.parse.quote(ref_query)}")
+        except Exception as exc:
+            print(f"  ! {key}: exact search failed ({exc})", flush=True)
+            continue
+        items = hit.get("items") or []
+        if items:
+            exact = {"total": hit.get("total", len(items)), "items": items}
+            save_payload("exact", slug, exact,
+                         f"{MEW_BASE}/api/listings/search?q={urllib.parse.quote(ref_query)}")
+            print(f"  = {key}: {len(items)} exact-match listings (total {hit.get('total', '?')})",
+                  flush=True)
+        else:
+            print(f"  - {key}: no exact-match listings found", flush=True)
+
     # The auctions endpoint ignores page/offset params and always returns the
     # same first 250 lots; a single page is the full reachable dataset.
     print("== fetching auction dataset (single page, 250-lot cap) ==", flush=True)

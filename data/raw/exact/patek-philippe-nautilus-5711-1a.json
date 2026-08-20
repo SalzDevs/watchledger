@@ -1,0 +1,53 @@
+{
+ "source_url": "https://mostexpensivewatches.net/api/listings/search?q=5711/1A",
+ "fetched_at": 1787217332.1694021,
+ "payload": {
+  "total": 2,
+  "items": [
+   {
+    "id": "h_7705292865745",
+    "title": "Patek Philippe Patek Philippe Nautilus 5711/1A-010",
+    "brand": "Patek Philippe",
+    "model": "Patek Philippe Nautilus 5711/1A-010",
+    "reference": "5711/1A-010",
+    "price_usd": 142000.0,
+    "currency": "USD",
+    "condition": "excellent",
+    "box_papers": "full_set",
+    "year": null,
+    "case_material": "Stainless Steel",
+    "case_size_mm": 40.0,
+    "movement": "Automatic",
+    "complications": [],
+    "merchant_slug": "material-good",
+    "merchant_name": "Material Good",
+    "image_url": "https://cdn.shopify.com/s/files/1/0561/5190/0369/files/Patek_Philippe_Nautilus_5711_1A-010_Bue_dial.jpg?v=1775158222",
+    "detail_url": "https://mostexpensivewatches.net/listing/h_7705292865745",
+    "buy_url": "https://mostexpensivewatches.net/out/h_7705292865745",
+    "available": true
+   },
+   {
+    "id": "h_15018796581247",
+    "title": "Patek Philippe Patek Philippe Nautilus | REF. 5711/1A-010 | Blue Dial | Box & Papers | 2025 Service | 40mm | Stainless Steel",
+    "brand": "Patek Philippe",
+    "model": "Patek Philippe Nautilus | REF. 5711/1A-010 | Blue Dial | Box & Papers | 2025 Service | 40mm | Stainless Steel",
+    "reference": "5711/1A-010",
+    "price_usd": 77950.0,
+    "currency": "USD",
+    "condition": "excellent",
+    "box_papers": "full_set",
+    "year": null,
+    "case_material": "Stainless Steel",
+    "case_size_mm": 40.0,
+    "movement": "Automatic",
+    "complications": [],
+    "merchant_slug": "watch-collectors-uk",
+    "merchant_name": "Watch Collectors UK",
+    "image_url": "https://cdn.shopify.com/s/files/1/0628/2218/7234/files/PatekPhilippeNautilus5711Steel_4fa0df51-18a4-46a3-bd63-efe14cee2215.jpg?v=1744278734",
+    "detail_url": "https://mostexpensivewatches.net/listing/h_15018796581247",
+    "buy_url": "https://mostexpensivewatches.net/out/h_15018796581247",
+    "available": false
+   }
+  ]
+ }
+}
