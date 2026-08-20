@@ -1,0 +1,8 @@
+.git
+data/ledger.sqlite
+data/ledger.sqlite-*
+reports/
+out/
+screenshots/
+tests/
+design.md

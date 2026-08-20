@@ -1,0 +1,27 @@
+{
+  "buildCommand": "python3 src/build_site.py",
+  "outputDirectory": "out",
+  "functions": {
+    "api/track.py": { "maxDuration": 10 },
+    "api/unsubscribe.py": { "maxDuration": 10 }
+  },
+  "rewrites": [
+    { "source": "/reference/:slug", "destination": "/reports/:slug.html" },
+    { "source": "/api/reference/:slug", "destination": "/api-json/reference/:slug" },
+    { "source": "/api/references.json", "destination": "/api-json/references.json" },
+    { "source": "/unsubscribe", "destination": "/api/unsubscribe" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(), payment=()" },
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' https:; connect-src 'self'" }
+      ]
+    }
+  ]
+}
