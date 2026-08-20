@@ -308,7 +308,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "frame-ancestors 'none'",
                     "form-action 'self'",
                     "script-src 'self'",
-                    "style-src 'self' https://fonts.googleapis.com",
+                    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
                     "font-src 'self' https://fonts.gstatic.com",
                     "img-src 'self' https:",
                     "connect-src 'self'",
@@ -407,7 +407,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not os.path.isfile(target):
             self.send(404, "not found")
             return
-        ctype = "text/css; charset=utf-8" if target.endswith(".css") else "application/octet-stream"
+        ctype = {
+            ".css": "text/css; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".svg": "image/svg+xml",
+            ".woff2": "font/woff2",
+        }.get(os.path.splitext(target)[1].lower(), "application/octet-stream")
         with open(target, "rb") as fh:
             self.send(200, fh.read(), ctype)
 
