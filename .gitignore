@@ -1,0 +1,8 @@
+# Derived / generated — regenerate with `make all`
+data/ledger.sqlite
+data/ledger.sqlite-wal
+data/ledger.sqlite-shm
+reports/*.html
+
+# OS junk
+.DS_Store
