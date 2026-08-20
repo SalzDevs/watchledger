@@ -312,7 +312,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "font-src 'self' https://fonts.gstatic.com",
                     "img-src 'self' https:",
                     "connect-src 'self'",
-                    "upgrade-insecure-requests",
                 ]),
             )
 
