@@ -1,427 +1,1394 @@
-# WatchLedger — Screenshot Review and Design Improvements
+# WatchLedger — Security and Safe Rendering Implementation Guide
 
-## Overall assessment
+## What this document is for
 
-The visual foundation is strong. The warm ivory background, restrained borders, editorial serif headings, and deep-green accent make the product feel premium, calm, and collector-focused.
+This guide explains **exactly what to change** in the WatchLedger repository to make the website safe when it displays data from external watch-listing sources.
 
-The next design iteration should focus less on added decoration and more on **readability, trust, and pricing clarity**. The site must constantly prove:
+Follow the steps in order. Do not skip a step because the current data source appears trustworthy. A dealer name, listing title, image URL, or listing URL is **external input**. Treat it as hostile until the application has validated it.
 
-> This market range is credible, these listings are comparable, and every price label has a clear explanation.
-
----
-
-## What is working well
-
-- The ivory, charcoal, and deep-green visual system feels refined and trustworthy.
-- The homepage hero clearly communicates that the product is about live watch-market data.
-- The serif heading style creates a collector/editorial personality rather than a generic marketplace look.
-- The three-step explainer is understandable at a glance.
-- The model-page hierarchy is sound: watch identity, range, interpretation, then listings.
-- Real listing imagery creates authenticity and helps the product feel less abstract than a valuation calculator.
-- Cards, borders, spacing, and shadows are restrained; this supports a serious market-research tone.
+This guide replaces the former visual design brief. It covers only **security and rendering safety**.
 
 ---
 
-# Highest-priority improvements
+# 1. The problem, in plain English
 
-## 1. Make the displayed data internally credible
+WatchLedger downloads public data from an external API and displays it on its own website.
 
-The screenshot shows a Rolex Submariner Date reference `126610LN`, while the table contains different vintage and special references, including `5513`, `5512`, `6205`, `1680`, and Kermit-related listings.
+External values include:
 
-A displayed range of `$10,300–$175,000` makes the page feel unreliable because these are not like-for-like comparables. The interface claims confidence while displaying evidence that contradicts it.
+- Watch titles
+- Dealer names
+- Condition text
+- Box-and-papers text
+- Materials
+- Image URLs
+- Original listing URLs
+- Reference/model metadata
 
-### Design rule
+A bad data source, compromised dealer account, or malicious listing could return a title such as:
 
-Show exact-reference listings by default. If the result set is broadened, make that explicit.
-
-```text
-24 exact-reference listings
-
-[Exact matches]  [Related Submariners]  [Vintage references]
+```html
+<img src=x onerror="alert('Your website was hacked')">
 ```
 
-A credible default market card:
+or a listing link such as:
 
 ```text
-OBSERVED MARKET RANGE
-
-$12,100 — $13,450
-
-Typical asking price: $12,760
-Based on 24 exact-reference listings
-Updated 44 minutes ago
+javascript:alert(document.cookie)
 ```
 
-If exact comparison data is limited, show an honest state rather than a misleading broad range:
+The browser must display these values as **plain text**, never as executable HTML or JavaScript.
 
-```text
-Limited exact-match data
+## The current dangerous areas
 
-We found 4 listings for reference 126610LN.
-20 related Submariner listings are available for broader research.
+The current repository has three main rendering problems:
 
-[View related listings]
+1. `src/report.py` creates the listing-analysis drawer with JavaScript `innerHTML` and external listing data.
+2. `src/server.py` creates homepage search suggestions with JavaScript `innerHTML` and external reference data.
+3. The application embeds external URLs into image and link attributes without first checking the URL scheme and destination.
+
+There is also a related problem:
+
+4. The HTML sends inline scripts and inline event handlers such as `onclick="..."`. This makes it difficult to add a strict Content Security Policy.
+
+The solution is:
+
+- Validate every URL.
+- Escape every server-rendered text value.
+- Never use `innerHTML` for source-provided data.
+- Render browser UI with DOM nodes and `textContent`.
+- Move JavaScript into external static files.
+- Add browser security headers.
+- Add tests that prove unsafe data stays harmless.
+
+---
+
+# 2. Definition of done
+
+Do not call this work complete until every item below is true.
+
+- [ ] A listing title containing `<script>alert(1)</script>` appears as visible text and does not run.
+- [ ] A listing title containing `</script><script>alert(1)</script>` cannot break an embedded JSON data block.
+- [ ] A dealer name containing HTML is displayed as text only.
+- [ ] `javascript:`, `data:`, `file:`, and malformed URLs are never emitted as listing links or image sources.
+- [ ] Listing details are rendered with `textContent`, not `innerHTML`.
+- [ ] Homepage search suggestions are rendered with `textContent`, not `innerHTML`.
+- [ ] JavaScript is loaded only from static files served by WatchLedger.
+- [ ] There are no inline `onclick=`, `onerror=`, or source-data-derived inline scripts.
+- [ ] The response has a Content Security Policy and standard security headers.
+- [ ] SQLite errors are logged on the server but are not returned to visitors.
+- [ ] Tests cover XSS, bad URLs, path traversal, and the drawer/search UI rendering rules.
+
+---
+
+# 3. Work in this order
+
+Do the work in exactly this order:
+
+1. Create URL and JSON safety helpers.
+2. Validate data while building the database.
+3. Stop putting complete listing JSON inside HTML attributes.
+4. Move all inline browser code to static JavaScript files.
+5. Replace `innerHTML` with safe DOM creation.
+6. Add security headers and safer error handling.
+7. Remove inline styles and inline event attributes.
+8. Add tests.
+9. Run the verification checklist.
+
+Do not start with styling. Make the data safe first.
+
+---
+
+# 4. Add one central security helper module
+
+## File to create
+
+Create: `src/security.py`
+
+Do not scatter URL validation and JSON escaping across multiple files. Put the rules in this one file so every page uses the same policy.
+
+## Paste this code into `src/security.py`
+
+```python
+"""Security helpers for untrusted third-party listing data.
+
+All data received from public APIs is untrusted. These helpers provide the
+single approved way to put text, URLs, and JSON-derived values into HTML.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+from typing import Any
+from urllib.parse import urlparse
+
+
+# Start strict. Add a hostname only after verifying that it is a real source
+# WatchLedger is willing to send visitors to.
+ALLOWED_EXTERNAL_SCHEMES = {"https"}
+
+
+def safe_text(value: Any) -> str:
+    """Return a value that is safe to place inside HTML text or attributes."""
+    if value is None:
+        return ""
+    return html.escape(str(value), quote=True)
+
+
+def safe_external_url(value: Any) -> str:
+    """Return an approved external HTTPS URL, or an empty string.
+
+    Never return arbitrary strings to an href or src attribute.
+    The empty string means: do not render that link or image.
+    """
+    if not isinstance(value, str):
+        return ""
+
+    value = value.strip()
+    if not value or len(value) > 2_048:
+        return ""
+
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return ""
+
+    # Reject relative URLs, javascript:, data:, file:, and malformed URLs.
+    if parsed.scheme.lower() not in ALLOWED_EXTERNAL_SCHEMES:
+        return ""
+    if not parsed.netloc:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+
+    return value
+
+
+def safe_json_script(value: Any) -> str:
+    """Serialize data safely for a <script type="application/json"> element.
+
+    Escaping <, >, and & prevents a listing title containing </script> from
+    terminating the script element and injecting executable markup.
+    """
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return (
+        encoded.replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
+def safe_slug(value: str) -> str:
+    """Allow only canonical WatchLedger slugs used in URL routing."""
+    if not isinstance(value, str):
+        return ""
+    if len(value) > 160:
+        return ""
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789-_")
+    return value if value and all(char in allowed for char in value) else ""
+```
+
+## Important rules
+
+- Only allow `https` initially.
+- Do not allow `http` merely because a source currently uses it.
+- Do not allow `data:` image URLs.
+- Do not allow URLs with usernames/passwords such as `https://user:password@example.com`.
+- Return an empty string for anything unsafe.
+- When the result is empty, do not render the link/image.
+
+---
+
+# 5. Validate source data when the SQLite ledger is built
+
+## File to change
+
+Change: `src/build_db.py`
+
+The database is the best place to reject obviously unsafe image and listing URLs. The report code should validate again before rendering; this is called **defence in depth**.
+
+## Step 5.1 — import the helper
+
+Near the other imports, add:
+
+```python
+from security import safe_external_url
+```
+
+## Step 5.2 — validate URLs before insertion
+
+Find both places that insert listing data into the `listings` table:
+
+- The normal per-reference listing insert.
+- The exact-search listing insert.
+
+Before each `cur.execute(...)`, calculate safe URLs:
+
+```python
+safe_image_url = safe_external_url(l.get("image_url"))
+safe_detail_url = safe_external_url(l.get("detail_url"))
+safe_buy_url = safe_external_url(l.get("buy_url"))
+```
+
+Then use those variables instead of the raw API values:
+
+```python
+safe_image_url,
+safe_detail_url,
+safe_buy_url,
+```
+
+Do this in **both** insert loops. Do not validate only the exact-search endpoint.
+
+## Step 5.3 — validate reference and auction URLs too
+
+For references and auction lots, validate external URLs before storing them:
+
+```python
+safe_external_url(r.get("url"))
+safe_external_url(a.get("url"))
+```
+
+## Step 5.4 — keep raw payloads unchanged
+
+Do **not** modify the JSON files under `data/raw`. They are meant to be the original evidence.
+
+The raw payload can contain unsafe text because it is evidence, not HTML. The database and renderer are where safety must be enforced.
+
+---
+
+# 6. Stop storing full listing JSON in `data-listing` HTML attributes
+
+## File to change
+
+Change: `src/report.py`
+
+The current listing row contains a large JSON blob in an HTML attribute:
+
+```html
+<tr data-listing='...'>
+```
+
+This mixes JSON, HTML escaping, browser dataset decoding, and third-party data in one fragile place.
+
+## Replace it with this design
+
+1. Each table row gets only a safe internal listing ID.
+2. The page contains one safe JSON data block.
+3. Browser JavaScript reads that data block and looks up a listing by ID.
+
+### Step 6.1 — create a list of browser-safe listing records
+
+Inside `build_report()`, before generating rows, create a dictionary:
+
+```python
+listing_data = {}
+```
+
+In `row_html()`, create a record using only values the drawer needs:
+
+```python
+listing_data[str(lid)] = {
+    "id": str(lid),
+    "title": title or "",
+    "price": price,
+    "condition": cond or "",
+    "box_papers": bp or "",
+    "year": year,
+    "material": mat or "",
+    "merchant": merchant or "",
+    "image_url": safe_external_url(img),
+    "listing_url": safe_external_url(buy or detail),
+    "kind": kind,
+    "pct": pct_label,
+    "sub": sub,
+    "range": f"{price_fmt(lo)} – {price_fmt(hi)}" if lo is not None else "",
+}
+```
+
+Import the helpers at the top of `src/report.py`:
+
+```python
+from security import safe_external_url, safe_json_script, safe_text
+```
+
+### Step 6.2 — change table rows to use only an ID
+
+Replace the current `data-listing='...'` attribute with:
+
+```html
+<tr class="lrow" data-listing-id="LISTING_ID">
+```
+
+The `LISTING_ID` value must be escaped with `safe_text()`.
+
+Do not put remote listing title, seller name, URL, or JSON into a table attribute.
+
+### Step 6.3 — return the listing map from `build_report()`
+
+Add this to the returned report dictionary:
+
+```python
+"listing_data": listing_data,
+```
+
+### Step 6.4 — emit a non-executable JSON data block
+
+In `render()`, just before the external JavaScript files, add:
+
+```python
+<script id="listing-data" type="application/json">{safe_json_script(d["listing_data"])}</script>
+<script src="/static/report.js" defer></script>
+```
+
+This must use `type="application/json"`. The browser will not execute it as JavaScript.
+
+Do not put `listing_data` in a normal inline `<script>`.
+
+---
+
+# 7. Replace the analysis drawer `innerHTML` implementation
+
+## File to create
+
+Create: `static/report.js`
+
+## Why
+
+This code is unsafe:
+
+```javascript
+body.innerHTML = `... ${d.title} ...`;
+```
+
+If `d.title` contains HTML, the browser parses it as HTML. Using `textContent` tells the browser: “this is text, not markup.”
+
+## Paste this code into `static/report.js`
+
+```javascript
+(() => {
+  "use strict";
+
+  const dataNode = document.getElementById("listing-data");
+  const drawer = document.getElementById("drawer");
+  const drawerBody = document.getElementById("drawer-body");
+  const mask = document.getElementById("dmask");
+  const closeButton = document.getElementById("drawer-close");
+
+  if (!dataNode || !drawer || !drawerBody || !mask || !closeButton) {
+    return;
+  }
+
+  let listings = {};
+  let previouslyFocusedElement = null;
+
+  try {
+    listings = JSON.parse(dataNode.textContent || "{}");
+  } catch {
+    console.error("WatchLedger: invalid listing data");
+    return;
+  }
+
+  function element(tagName, className, text) {
+    const node = document.createElement(tagName);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+
+  function safeExternalUrl(value) {
+    if (typeof value !== "string") return "";
+
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function priceText(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0,
+    }).format(value);
+  }
+
+  function addDetailRow(table, label, value) {
+    const row = document.createElement("tr");
+    const labelCell = element("td", "", label);
+    const valueCell = element("td", "", value || "—");
+    row.append(labelCell, valueCell);
+    table.appendChild(row);
+  }
+
+  function badgeClass(kind) {
+    const allowed = new Set(["deal", "fair", "above", "over", "not_comp", "limited"]);
+    return allowed.has(kind) ? kind : "not_comp";
+  }
+
+  function buildDrawer(listing) {
+    drawerBody.replaceChildren();
+
+    const imageUrl = safeExternalUrl(listing.image_url);
+    if (imageUrl) {
+      const image = document.createElement("img");
+      image.className = "drawer-img";
+      image.src = imageUrl;
+      image.alt = listing.title ? `Listing photo: ${listing.title}` : "Listing photo";
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      drawerBody.appendChild(image);
+    }
+
+    drawerBody.appendChild(element("h2", "drawer-brand", listing.title || "Watch listing"));
+    drawerBody.appendChild(element("p", "drawer-price", priceText(listing.price)));
+
+    const kind = badgeClass(listing.kind);
+    const badge = element("div", `badge badge-${kind}`);
+    badge.append(
+      element("span", "pct", listing.pct || "—"),
+      element("span", "sub", listing.sub || "Limited comparable data")
+    );
+    drawerBody.appendChild(badge);
+
+    const explanation = element("section", `drawer-section tint-${kind}`);
+    explanation.appendChild(element("h3", "", "Why this stands out"));
+
+    let explanationText = "This listing does not have enough comparable data for a price classification.";
+    if (kind === "deal") {
+      explanationText = `This listing is below the observed comparable range of ${listing.range || "this reference"}.`;
+    } else if (kind === "fair") {
+      explanationText = `This listing is within the observed comparable range of ${listing.range || "this reference"}.`;
+    } else if (kind === "above" || kind === "over") {
+      explanationText = `This listing is above the observed comparable range of ${listing.range || "this reference"}.`;
+    }
+
+    explanation.appendChild(element("p", "", explanationText));
+    drawerBody.appendChild(explanation);
+
+    const details = element("section", "drawer-section");
+    details.appendChild(element("h3", "", "Listing details"));
+    const table = element("table", "kv");
+    addDetailRow(table, "Condition", listing.condition);
+    addDetailRow(table, "Year", listing.year ? String(listing.year) : "");
+    addDetailRow(table, "Box & papers", listing.box_papers);
+    addDetailRow(table, "Material", listing.material);
+    addDetailRow(table, "Seller", listing.merchant);
+    details.appendChild(table);
+    drawerBody.appendChild(details);
+
+    const listingUrl = safeExternalUrl(listing.listing_url);
+    if (listingUrl) {
+      const link = element("a", "btn btn-primary", "View original listing ↗");
+      link.href = listingUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      drawerBody.appendChild(link);
+    }
+  }
+
+  function openDrawer(listingId, trigger) {
+    const listing = listings[String(listingId)];
+    if (!listing) return;
+
+    previouslyFocusedElement = trigger || document.activeElement;
+    buildDrawer(listing);
+    mask.classList.add("open");
+    drawer.classList.add("open");
+    drawer.setAttribute("aria-hidden", "false");
+    document.body.classList.add("drawer-open");
+    closeButton.focus();
+  }
+
+  function closeDrawer() {
+    mask.classList.remove("open");
+    drawer.classList.remove("open");
+    drawer.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("drawer-open");
+
+    if (previouslyFocusedElement && typeof previouslyFocusedElement.focus === "function") {
+      previouslyFocusedElement.focus();
+    }
+  }
+
+  function focusableElements() {
+    return [...drawer.querySelectorAll(
+      'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )].filter((node) => !node.hasAttribute("hidden"));
+  }
+
+  document.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-open-listing]");
+    if (trigger) {
+      openDrawer(trigger.dataset.openListing, trigger);
+      return;
+    }
+
+    if (event.target === mask || event.target.closest("[data-close-drawer]")) {
+      closeDrawer();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (!drawer.classList.contains("open")) return;
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDrawer();
+      return;
+    }
+
+    if (event.key === "Tab") {
+      const nodes = focusableElements();
+      if (!nodes.length) return;
+
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  });
+})();
+```
+
+## Change the drawer HTML in `src/report.py`
+
+Replace inline `onclick` handlers with data attributes and accessible dialog attributes:
+
+```html
+<div class="drawer-mask" id="dmask" aria-hidden="true"></div>
+<aside
+  class="drawer"
+  id="drawer"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="drawer-title"
+  aria-hidden="true">
+  <button
+    id="drawer-close"
+    class="drawer-close"
+    type="button"
+    data-close-drawer
+    aria-label="Close listing analysis">×</button>
+  <div id="drawer-body"></div>
+</aside>
+```
+
+## Change each table action button
+
+Replace:
+
+```html
+<button onclick="openDrawer(this)">View analysis</button>
+```
+
+with:
+
+```html
+<button
+  class="btn btn-sm"
+  type="button"
+  data-open-listing="LISTING_ID">
+  View analysis
+</button>
+```
+
+Escape `LISTING_ID` with `safe_text()`.
+
+---
+
+# 8. Replace homepage search `innerHTML`
+
+## File to create
+
+Create: `static/home.js`
+
+## File to change
+
+Change: `src/server.py`
+
+The homepage currently takes externally supplied reference names and image URLs and inserts them into a template assigned to `box.innerHTML`.
+
+Replace this with safe DOM creation.
+
+## Step 8.1 — emit safe search data
+
+In `render_home()`, create a small list that contains only the required fields:
+
+```python
+search_data = [
+    {
+        "slug": safe_slug(s["slug"]),
+        "brand": s["brand"] or "",
+        "model": s["model"] or "",
+        "ref": s["ref"] or "",
+        "range": price_fmt(s["band_low"] or s["low"]) + " – " + price_fmt(s["band_high"] or s["high"]),
+        "image_url": safe_external_url(s["image"]),
+    }
+    for s in stats
+]
+```
+
+Import this at the top of `src/server.py`:
+
+```python
+from security import safe_external_url, safe_json_script, safe_slug, safe_text
+```
+
+Before the closing `</body>`, add:
+
+```html
+<script id="reference-data" type="application/json">SAFE_JSON_HERE</script>
+<script src="/static/home.js" defer></script>
+```
+
+Use:
+
+```python
+safe_json_script(search_data)
+```
+
+Remove the existing inline homepage script completely.
+
+## Step 8.2 — paste this into `static/home.js`
+
+```javascript
+(() => {
+  "use strict";
+
+  const input = document.getElementById("q");
+  const box = document.getElementById("suggestions");
+  const source = document.getElementById("reference-data");
+
+  if (!input || !box || !source) return;
+
+  let references = [];
+  try {
+    references = JSON.parse(source.textContent || "[]");
+  } catch {
+    console.error("WatchLedger: invalid reference search data");
+    return;
+  }
+
+  function safeSlug(value) {
+    return typeof value === "string" && /^[a-z0-9_-]{1,160}$/.test(value) ? value : "";
+  }
+
+  function safeImageUrl(value) {
+    if (typeof value !== "string") return "";
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function clearSuggestions() {
+    box.replaceChildren();
+  }
+
+  function addSuggestion(reference) {
+    const slug = safeSlug(reference.slug);
+    if (!slug) return;
+
+    const link = document.createElement("a");
+    link.className = "sug-row";
+    link.href = `/reference/${encodeURIComponent(slug)}`;
+
+    const imageUrl = safeImageUrl(reference.image_url);
+    if (imageUrl) {
+      const image = document.createElement("img");
+      image.src = imageUrl;
+      image.alt = "";
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      link.appendChild(image);
+    }
+
+    const text = document.createElement("span");
+    const title = document.createElement("span");
+    title.className = "t";
+    title.textContent = `${reference.brand || ""} ${reference.model || ""}`.trim();
+    const subtitle = document.createElement("span");
+    subtitle.className = "s";
+    subtitle.textContent = `Ref ${reference.ref || "—"}`;
+    text.append(title, document.createElement("br"), subtitle);
+
+    const range = document.createElement("span");
+    range.className = "r";
+    range.textContent = reference.range || "—";
+
+    link.append(text, range);
+    box.appendChild(link);
+  }
+
+  function openSuggestions() {
+    const term = input.value.trim().toLowerCase();
+    const hits = references
+      .filter((reference) => {
+        const searchable = `${reference.brand || ""} ${reference.model || ""} ${reference.ref || ""}`.toLowerCase();
+        return !term || searchable.includes(term);
+      })
+      .slice(0, 6);
+
+    clearSuggestions();
+
+    if (hits.length) {
+      hits.forEach(addSuggestion);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "sug-empty";
+      empty.textContent = "No tracked reference matches. Try Rolex 126610LN.";
+      box.appendChild(empty);
+    }
+
+    box.classList.add("open");
+  }
+
+  function closeSuggestions() {
+    box.classList.remove("open");
+  }
+
+  input.addEventListener("input", openSuggestions);
+  input.addEventListener("focus", openSuggestions);
+
+  document.addEventListener("click", (event) => {
+    if (!box.contains(event.target) && event.target !== input) {
+      closeSuggestions();
+    }
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    const first = box.querySelector(".sug-row");
+    if (first) first.click();
+  });
+
+  document.querySelectorAll("[data-search-value]").forEach((button) => {
+    button.addEventListener("click", () => {
+      input.value = button.dataset.searchValue || "";
+      openSuggestions();
+      const first = box.querySelector(".sug-row");
+      if (first) first.click();
+    });
+  });
+})();
+```
+
+## Change homepage search chips
+
+Replace inline data that relies on the old script with accessible button attributes:
+
+```html
+<button type="button" class="chip" data-search-value="Rolex 126610LN">Rolex 126610LN</button>
+```
+
+Do this for each chip.
+
+---
+
+# 9. Validate every server-rendered external URL
+
+## Files to change
+
+- `src/report.py`
+- `src/server.py`
+
+Use `safe_external_url()` before rendering:
+
+- `<img src="...">`
+- `<a href="...">`
+- The hero image
+- Market-card images
+- Recent-list images
+- Raw source URL links
+- Original listing links
+- Reference-page links
+- Auction links, if shown later
+
+## Correct rendering pattern
+
+```python
+image_url = safe_external_url(s["image"])
+if image_url:
+    image_html = (
+        f'<img src="{safe_text(image_url)}" '
+        f'alt="{safe_text(alt_text)}" loading="lazy" '
+        f'referrerpolicy="no-referrer">'
+    )
+else:
+    image_html = '<div class="image-placeholder" aria-hidden="true"></div>'
+```
+
+For external links:
+
+```python
+listing_url = safe_external_url(value)
+if listing_url:
+    link_html = (
+        f'<a href="{safe_text(listing_url)}" target="_blank" '
+        f'rel="noopener noreferrer">View original listing ↗</a>'
+    )
+else:
+    link_html = ''
+```
+
+Never write this:
+
+```python
+f'<a href="{html.escape(value)}">'
+```
+
+HTML escaping prevents quote injection but does **not** make `javascript:` safe.
+
+---
+
+# 10. Add Content Security Policy and browser security headers
+
+## File to change
+
+Change: `src/server.py`
+
+## Step 10.1 — add a header helper
+
+Add this method inside the `Handler` class:
+
+```python
+def send_security_headers(self, content_type: str) -> None:
+    self.send_header("X-Content-Type-Options", "nosniff")
+    self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+    self.send_header("X-Frame-Options", "DENY")
+    self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+    self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+
+    if content_type.startswith("text/html"):
+        self.send_header(
+            "Content-Security-Policy",
+            "; ".join([
+                "default-src 'self'",
+                "base-uri 'self'",
+                "object-src 'none'",
+                "frame-ancestors 'none'",
+                "form-action 'self'",
+                "script-src 'self'",
+                "style-src 'self' https://fonts.googleapis.com",
+                "font-src 'self' https://fonts.gstatic.com",
+                "img-src 'self' https:",
+                "connect-src 'self'",
+                "upgrade-insecure-requests",
+            ]),
+        )
+```
+
+## Step 10.2 — call it in `send()`
+
+In `send()`, call `self.send_security_headers(ctype)` after `send_response()` and before `end_headers()`.
+
+```python
+self.send_response(code)
+self.send_header("Content-Type", ctype)
+self.send_security_headers(ctype)
+self.send_header("Content-Length", str(len(data)))
+```
+
+## Important
+
+The CSP above will block inline `<script>` elements and inline `onclick` handlers. That is intentional. Do not weaken the CSP by adding `'unsafe-inline'` to `script-src`.
+
+Move all JavaScript to `/static/home.js` and `/static/report.js` first.
+
+## Fonts
+
+The CSP shown allows Google Fonts. The more private and stricter final version is:
+
+1. Download licensed font files.
+2. Serve them from `/static/fonts/`.
+3. Add `@font-face` in `static/style.css`.
+4. Change `font-src` to `'self'`.
+5. Remove Google Fonts `<link>` tags.
+
+Do that after the initial security work is passing.
+
+---
+
+# 11. Remove inline event handlers and inline styles
+
+## Why
+
+Inline event handlers force the site to weaken CSP. Inline styles make it hard to adopt strict style policies later.
+
+## Files to change
+
+- `src/server.py`
+- `src/report.py`
+- `static/style.css`
+
+## Replace these patterns
+
+### Replace inline events
+
+Bad:
+
+```html
+<button onclick="window.location='/'">⌕</button>
+```
+
+Good:
+
+```html
+<a class="nav-icon" href="/" aria-label="Search">⌕</a>
+```
+
+Bad:
+
+```html
+<button onclick="openDrawer(this)">View analysis</button>
+```
+
+Good:
+
+```html
+<button type="button" data-open-listing="LISTING_ID">View analysis</button>
+```
+
+### Replace inline styling
+
+Bad:
+
+```html
+<p style="max-width:800px;margin:60px auto">...</p>
+```
+
+Good:
+
+```html
+<main class="narrow-page narrow-page-spaced">...</main>
+```
+
+Then add the CSS class in `static/style.css`.
+
+### Dynamic range-bar widths
+
+For range percentage positioning, only use server-calculated numeric values. Do not put source-provided strings in a `style` attribute.
+
+Safe example:
+
+```python
+def percent(value: float, low: float, high: float) -> float:
+    if high <= low:
+        return 0.0
+    return max(0.0, min(100.0, (value - low) / (high - low) * 100.0))
+```
+
+Then format only the safe number:
+
+```python
+f'<div class="band" style="left:{left:.1f}%;width:{width:.1f}%"></div>'
+```
+
+Never do this:
+
+```python
+f'<div style="left:{raw_api_value}">'
 ```
 
 ---
 
-## 2. Make the market range card the strongest page element
+# 12. Improve server error handling and request safety
 
-The market card is in the correct place, but it needs stronger structure and more legible supporting evidence.
+## File to change
 
-The user should understand immediately:
+Change: `src/server.py`
 
-1. The observed range
-2. The typical price
-3. The amount and freshness of the supporting evidence
+## Step 12.1 — do not expose SQLite errors
 
-### Recommended hierarchy
+Current behaviour returns the internal database error message to the visitor.
 
-```text
-CURRENT OBSERVED MARKET RANGE
+Replace:
 
-$12,100 — $13,450
-
-Typical asking price
-$12,760
-
-Based on 24 exact-reference active listings · Updated 44 min ago
+```python
+except sqlite3.Error as e:
+    self.send(500, f"<pre>ledger error: {html.escape(str(e))}</pre>")
 ```
 
-### Recommended range visual
+with:
 
-```text
-$11.5k        $12.1k          $12.76k          $13.45k         $14k
-──────────────[─────────────────●─────────────────]──────────────
-               Lower range      Typical price      Upper range
+```python
+except sqlite3.Error:
+    self.log_error("database request failed")
+    self.send(500, "Internal server error")
 ```
 
-Use a soft gray full line, pale-green observed-range band, deep-green typical-price marker, and labels large enough to read without zooming.
+For a proper HTML error page, render a fixed template that contains no exception text.
+
+## Step 12.2 — validate report slugs
+
+At the beginning of the `/reference/` and `/api/reference/` route branches:
+
+```python
+slug = safe_slug(slug)
+if not slug:
+    self.send(404, render_not_found("Unknown reference"))
+    return
+```
+
+## Step 12.3 — do not expose raw-data browsing in public production by default
+
+The raw-data browser is a great POC proof feature, but it is not automatically appropriate for public production.
+
+Before public launch, choose one option:
+
+### Option A — keep a public provenance viewer
+
+- Show an approved summary of payload metadata.
+- Remove irrelevant/unlicensed fields.
+- Keep direct source attribution.
+- Add a takedown/contact policy.
+
+### Option B — keep raw payloads internal
+
+- Remove `/raw/` from public routing.
+- Keep an internal admin-only provenance viewer.
+- Show visitors a report-level evidence summary instead.
+
+Do not accidentally publish source fields, IDs, or data that violate a source agreement.
+
+## Step 12.4 — use a production server
+
+Do not deploy `http.server.ThreadingHTTPServer` directly to the internet.
+
+For production:
+
+- Place the application behind an HTTPS reverse proxy.
+- Use a process manager.
+- Configure timeouts.
+- Add request-size limits.
+- Add rate limiting at the proxy.
+- Send logs to an error-monitoring service.
+
+For this POC, keep the standard-library server for local use only.
 
 ---
 
-## 3. Make price-position labels meaningful
+# 13. Add safe image behaviour
 
-The screenshots show the same `Within observed range` badge across listings at dramatically different prices. This weakens the central value proposition.
+External images are not harmless just because they are images. They can track users and degrade page performance.
 
-| Listing position | Label | Visual treatment |
-|---|---|---|
-| Materially below the comparable range | Potential deal | Pale green background, deep green text |
-| Inside the comparable range | Fair price | Pale blue background, slate-blue text |
-| Slightly above the range | Above market | Pale amber background, amber text |
-| Materially above the range | High above market | Pale red background, berry text |
-| Wrong reference or incomplete comparison data | Not comparable / Limited data | Neutral gray background |
+## File to change
 
-Use specific explanations:
+Change: `static/style.css` and all image rendering in Python/JavaScript.
 
-```text
-↓ 6.1% below typical
-Potential deal
+## Required changes
+
+Every external image should include:
+
+```html
+loading="lazy"
+referrerpolicy="no-referrer"
 ```
 
-```text
-Within observed range
-Fair price
-```
+Every listing image should have one of these alt strategies:
 
-```text
-↑ 8.4% above typical
-Above comparable range
-```
+- Meaningful: `alt="Rolex Explorer II Polar listing photo"`
+- Decorative/redundant: `alt=""`
 
-```text
-Different reference
-Not included in the exact-match range
-```
+Do not use an empty alt value if the image is the only visual identifier for a listing.
 
-Avoid generic badges that do not explain why the listing has that status.
+## Future improvement
 
----
+Do not start by downloading/caching dealer photos without written permission. For now:
 
-## 4. Increase text size and contrast
-
-The interface is polished, but several parts are too small or too faint for normal laptop use.
-
-Most affected areas:
-
-- Top navigation labels
-- Hero supporting copy
-- Search placeholder and example searches
-- Listing metadata
-- Listing-table headings
-- Seller/source names
-- Range-chart labels
-- Small market-card details
-- Raw data/source information
-
-### Minimum readability rules
-
-| Element | Recommended size |
-|---|---:|
-| Standard body copy | 15–16px |
-| Navigation labels | 13–14px |
-| Listing metadata | 13–14px |
-| Table headers | 11–12px with stronger contrast |
-| Price in a listing row | 18–20px |
-| Supporting market text | 13–14px |
-
-Use available whitespace to improve readability rather than fitting more text into the page.
+- Validate the source URL.
+- Hotlink only where source terms permit.
+- Use `referrerpolicy="no-referrer"`.
+- Show a neutral placeholder if the image fails.
 
 ---
 
-## 5. Simplify the model-header metric cards
+# 14. Add automated tests
 
-The four small top-level metric cards are visually tidy but feel fragmented.
+## Files to create
 
-`Active listings: 24` and `In stock now: 24` are potentially redundant. `Auction results: 0` gives an unhelpful zero-value fact the same visual importance as useful signals.
-
-### Recommended replacement
+Create:
 
 ```text
-24
-Exact-match listings
-
-9
-Tracked dealers
-
-High
-Data confidence
+tests/
+tests/test_security.py
+tests/test_report_safety.py
+tests/test_server_safety.py
+requirements-dev.txt
 ```
 
-Place freshness nearby:
+Put this in `requirements-dev.txt`:
 
 ```text
-Last checked 44 minutes ago
+pytest==8.3.5
 ```
 
-Only show auction results when meaningful auction data is available.
+## Test 1 — URL policy
 
----
+Create `tests/test_security.py`:
 
-# Homepage improvements
+```python
+from src.security import safe_external_url, safe_json_script
 
-## 6. Strengthen the hero search
 
-Search is the homepage’s primary action, but the current search box is visually quieter than the watch image.
+def test_allows_https_url():
+    assert safe_external_url("https://dealer.example/watch/123") == "https://dealer.example/watch/123"
 
-### Improve it
 
-- Increase width by approximately 15–25%.
-- Increase height to 60–64px.
-- Use darker placeholder text.
-- Make the search icon clearer.
-- Replace inline example text with tappable/clickable example chips.
+def test_rejects_javascript_url():
+    assert safe_external_url("javascript:alert(1)") == ""
+
+
+def test_rejects_data_url():
+    assert safe_external_url("data:text/html,<script>alert(1)</script>") == ""
+
+
+def test_rejects_file_url():
+    assert safe_external_url("file:///etc/passwd") == ""
+
+
+def test_rejects_http_url():
+    assert safe_external_url("http://dealer.example/watch/123") == ""
+
+
+def test_json_script_cannot_be_terminated_by_listing_title():
+    payload = {"title": "</script><script>alert(1)</script>"}
+    encoded = safe_json_script(payload)
+    assert "</script" not in encoded.lower()
+    assert "\\u003c/script" in encoded.lower()
+```
+
+## Test 2 — report HTML must not contain unsafe URLs
+
+Create `tests/test_report_safety.py` with a temporary SQLite database containing a deliberately hostile listing:
+
+```python
+# Pseudocode / test intent:
+# 1. Insert a title containing <img src=x onerror=alert(1)>.
+# 2. Insert buy_url = javascript:alert(1).
+# 3. Build the report.
+# 4. Assert the rendered report does not contain javascript:.
+# 5. Assert the title is HTML-escaped in server HTML.
+# 6. Assert the listing data appears only in type=application/json JSON,
+#    where < becomes \u003c.
+```
+
+The exact fixture can be written after the security helpers exist. The test must cover the real renderer, not only helper functions.
+
+## Test 3 — limited-data reports must not show valuation categories
+
+```python
+# Create four exact listings.
+# Render the report.
+# Assert "How to read this market" is not present.
+# Assert "Why there is no market range yet" is present.
+# Assert "Potential deal" is not present.
+```
+
+## Test 4 — related rows never enter exact tab
+
+```python
+# Create five exact rows and two related rows.
+# Render the report.
+# Assert the exact table contains only exact IDs.
+# Assert the related table contains only related IDs.
+```
+
+## Test 5 — routes reject invalid slugs
+
+Test paths such as:
 
 ```text
-Search brand, model, or reference number
-
-Popular searches
-[Rolex 126610LN] [Omega Speedmaster] [Patek Philippe 5711]
+/reference/../../etc/passwd
+/reference/<script>alert(1)</script>
+/api/reference/javascript:alert(1)
 ```
 
----
-
-## 7. Rebalance the hero image and floating market card
-
-The hero image is attractive but visually dominates the product explanation. It can make the page feel more like a dealer/editorial site than a pricing-research tool.
-
-The floating price card is a good idea, but it is too small and overlaps a visually important part of the watch image.
-
-### Improve it
-
-- Reduce the image scale slightly.
-- Increase the card width and internal padding.
-- Align the card with the lower-left edge of the image rather than covering the centre of the watch.
-- Include a clear evidence line: `24 active listings · Updated 44 min ago`.
-
-The card should feel like a compact evidence panel, not decorative overlay content.
+Expected result: `404`, with no stack trace and no internal filesystem/database information.
 
 ---
 
-## 8. Reduce empty transition space after the hero
+# 15. Add a safe state-specific render path
 
-The whitespace between the hero and `How it works` is calm but slightly delays the journey to supporting proof.
+## File to change
 
-Bring the next section upward by approximately 48–80px, or use the space for a compact trust strip:
+Change: `src/report.py`
+
+Use separate functions instead of one large template with empty values.
+
+Create these functions:
+
+```python
+def render_valid_market_summary(report: dict) -> str:
+    """Render range, median, range bar, and valid classification explanation."""
+
+
+def render_limited_data_summary(report: dict) -> str:
+    """Render coverage explanation and next actions only."""
+
+
+def render_valid_market_panel(report: dict) -> str:
+    """Render deal/fair/above-market explanation only when a range exists."""
+
+
+def render_limited_data_panel(report: dict) -> str:
+    """Explain why no valuation labels are shown yet."""
+```
+
+Then in `render()`:
+
+```python
+if d["limited"]:
+    summary = render_limited_data_summary(d)
+    panel = render_limited_data_panel(d)
+else:
+    summary = render_valid_market_summary(d)
+    panel = render_valid_market_panel(d)
+```
+
+This prevents accidental empty placeholders such as `Below —` from appearing again.
+
+---
+
+# 16. Manual verification checklist
+
+Run these checks after the code is changed.
+
+## Step 16.1 — install test tools
 
 ```text
-Live dealer listings     Reference-level comparison     Transparent market ranges
+python -m pip install -r requirements-dev.txt
 ```
 
----
-
-## 9. Replace placeholder mini-panels in the three-step cards
-
-The gray blocks at the bottom of the explainer cards look unfinished. They should visually explain each step.
-
-| Step | Visual |
-|---|---|
-| We collect visible market listings | Three small listing cards entering one collection |
-| We compare like-for-like watches | Similar listings grouped around one reference number |
-| You see where each price sits | Listing dots distributed around a market-range bar |
-
-Use simple line drawings or lightweight data illustrations. Avoid decorative graphics that do not communicate meaning.
-
----
-
-## 10. Replace the `JSON API` link
-
-`JSON API →` feels out of place in a consumer-facing section. It introduces developer language into a premium collector experience.
-
-Use one of the following instead:
-
-- `Explore all markets →`
-- `View all tracked watches →`
-- `Browse market data →`
-
-If an API exists, keep it in the footer or on a dedicated developer page.
-
----
-
-## 11. Give market cards one more useful data point
-
-The market cards are visually strong but need a quick trend signal to make them more useful.
+## Step 16.2 — run automated tests
 
 ```text
-Omega Speedmaster Professional
-Reference 310.30.42.50.01.002
-
-€5,800–€6,450
-↑ 2.8% over 90 days
-42 active listings · Updated 42 min ago
+python -m pytest -q
 ```
 
-Use muted green for positive movement, muted berry for negative movement, and neutral gray when trend data is unavailable.
+Do not continue if tests fail.
 
-Do not show `Potential deal` badges on the homepage; deal discovery should remain on the model page.
-
----
-
-# Model page and listing-table improvements
-
-## 12. Add a clear filter and sorting row
-
-Users need to refine listings before scanning a long table. The current table begins too abruptly.
+## Step 16.3 — rebuild the project
 
 ```text
-Live listings                                      Sort: Best value ▾
-
-[Condition ▾] [Box & papers ▾] [Location ▾] [Price ▾] [More filters ▾]
-
-24 exact-reference listings · Updated 44 minutes ago
+make clean
+make all
+make serve
 ```
 
-Primary filters:
-
-- Condition
-- Box & papers
-- Location
-- Price
-- Seller type
-- Availability
-
-Default sort: **Best value**.
-
-Tooltip copy:
-
-> Ranks listings by price position after comparing condition, completeness, freshness, and market relevance.
-
----
-
-## 13. Improve listing-row scanability
-
-The current listing rows are clean but too compressed. Watch identity, price, price position, seller details, and actions need stronger separation.
+On Windows, if `make` is unavailable, run the equivalent Python commands:
 
 ```text
-[Photo]  Rolex Submariner Date                    $12,450       Potential deal       Dealer name
-         126610LN · 2023 · Excellent · Full set  $620 below    ↓ 4.8% below         London, UK
-
-                                                                    [View analysis]
+python src/fetch.py
+python src/build_db.py
+python src/report.py
+python src/server.py
 ```
 
-### Changes
+## Step 16.4 — inspect response headers
 
-- Increase row height slightly.
-- Make the watch title and price visually stronger.
-- Keep percentage and price-position label together.
-- De-emphasize secondary seller/source metadata.
-- Rename the far-right action from `View` to `View analysis`.
-- Place `View original listing ↗` inside the analysis drawer rather than making the table action ambiguous.
-
----
-
-## 14. Replace visible raw source URLs with a provenance summary
-
-A raw source URL above the table reads as debug information. It is valuable but should not be visually noisy.
+Open the site in a browser or use an HTTP client. Confirm the HTML response includes:
 
 ```text
-24 exact-match listings from tracked public sources · Last checked 20 Jun 2026, 08:03 UTC
-
-[See sources and methodology]
+Content-Security-Policy
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+X-Frame-Options: DENY
+Cross-Origin-Opener-Policy: same-origin
+Permissions-Policy
 ```
 
-Put direct raw links inside an expandable evidence/source panel.
+## Step 16.5 — test a hostile listing manually
 
----
-
-## 15. Add visible evidence near the market range
-
-The site claims it uses verifiable public data. Make that proof visible beside or below the market range.
+Temporarily insert this into a local test fixture/database only:
 
 ```text
-EVIDENCE BEHIND THIS RANGE
-
-24 exact-match active listings
-9 tracked dealers
-24 listings checked in the last 48 hours
-
-[Inspect comparable listings]
+Title: </script><script>alert('xss')</script>
+Seller: <img src=x onerror=alert('xss')>
+Image URL: javascript:alert('xss')
+Listing URL: data:text/html,<script>alert('xss')</script>
 ```
 
-This makes the product’s core differentiator tangible without cluttering the page.
+Expected result:
+
+- No browser alert.
+- No executable markup.
+- Unsafe image does not render.
+- Unsafe original-listing button does not render.
+- Title/seller appear as harmless text where displayed.
+
+## Step 16.6 — test keyboard interaction
+
+1. Open a listing drawer with Enter or Space.
+2. Press Tab repeatedly.
+3. Confirm focus never escapes the drawer.
+4. Press Escape.
+5. Confirm the drawer closes.
+6. Confirm focus returns to `View analysis`.
 
 ---
 
-# Visual refinements
+# 17. Things not to do
 
-## Spacing and card treatment
+Do **not** do any of the following shortcuts:
 
-Keep the existing visual direction, with small adjustments:
-
-- Maintain the ivory page background and white card surfaces.
-- Use borders as the default separation mechanism rather than shadows.
-- Keep card radii around 12–16px.
-- Use 24–32px padding for key market cards.
-- Increase vertical rhythm around important sections; reduce unnecessary blank gaps.
-- Keep hover shadows extremely soft.
-
-## Colour rules
-
-| State | Background | Text |
-|---|---|---|
-| Potential deal | `#E6F1EC` | `#1F5B48` |
-| Fair price | `#E8F0F4` | `#36566C` |
-| Above market | `#FCF1DC` | `#A96816` |
-| High above market | `#F8E7E7` | `#9B3436` |
-| Not comparable / limited data | `#F1F0EB` | `#696862` |
-
-Do not use bright green or red. The interface should communicate careful analysis, not trading-app urgency.
+- Do not use `innerHTML` because it is convenient.
+- Do not add `'unsafe-inline'` to the CSP script policy.
+- Do not trust upstream data because it is from a watch API.
+- Do not treat `html.escape()` as URL validation.
+- Do not allow every image/link URL just to avoid broken images.
+- Do not publish raw source data publicly without checking data-source terms.
+- Do not send exception text to visitors.
+- Do not deploy the standard-library server directly to production.
+- Do not mark this work done without hostile-data tests.
 
 ---
 
-# Final priority list
+# 18. Expected final file changes
 
-1. Show only genuine exact-reference comparables by default.
-2. Replace the extreme range with a credible exact-match market range, or show a limited-data state.
-3. Make deal, fair, above-market, and not-comparable statuses visibly different and specifically explained.
-4. Increase small-text size and contrast across navigation, tables, charts, and metadata.
-5. Simplify top summary metrics to exact matches, sources/dealers, confidence, and freshness.
-6. Make search more dominant on the homepage.
-7. Improve filtering, sorting, and scanability in the live-listings area.
-8. Turn visible data provenance into a polished evidence module rather than a raw URL.
-9. Replace placeholder explainer-card visuals with meaningful mini-diagrams.
-10. Remove developer-oriented language such as `JSON API` from consumer-facing areas.
+After completing this work, the repository should have these security-related changes:
 
-## Final design direction
+```text
+src/
+  security.py                 NEW: text, URL, slug, JSON helpers
+  build_db.py                 UPDATED: validate URLs before writing ledger rows
+  report.py                   UPDATED: safe listing-data block, no inline handlers,
+                               state-specific report panels
+  server.py                   UPDATED: safe search-data block, safe URLs, headers,
+                               generic server errors, slug validation
 
-> Preserve the current premium editorial aesthetic, but make it more legible and evidential. The page should never make a user wonder whether listings are truly comparable, whether a price label is justified, or whether the displayed market range is reliable.
+static/
+  home.js                     NEW: safe search suggestions using DOM nodes
+  report.js                   NEW: safe drawer, focus management, safe DOM creation
+  style.css                   UPDATED: classes replacing inline styling; drawer state
+
+tests/
+  test_security.py            NEW: URL and JSON safety helpers
+  test_report_safety.py       NEW: hostile listing/report behaviour
+  test_server_safety.py       NEW: unsafe routes and headers
+
+requirements-dev.txt          NEW: pytest development dependency
+```
+
+---
+
+# Final standard
+
+> WatchLedger must be able to display a malicious title, seller name, image URL, or listing URL from a third-party source without executing code, leaking internal information, weakening browser protections, or misleading users about the safety of external destinations.
+
+Finish this guide before adding more sources, more pages, or more visual features.
